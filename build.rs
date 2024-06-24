@@ -133,6 +133,15 @@ fn main() {
         (("uart", "CTS"), quote!(crate::uart::CtsPin)),
         (("uart", "RTS"), quote!(crate::uart::RtsPin)),
         (("uart", "DE"), quote!(crate::uart::DePin)),
+        (("spi", "SCLK"), quote!(crate::spi::SclkPin)),
+        (("spi", "CS0"), quote!(crate::spi::CsPin)),
+        (("spi", "CS1"), quote!(crate::spi::CsPin)),
+        (("spi", "CS2"), quote!(crate::spi::CsPin)),
+        (("spi", "CS3"), quote!(crate::spi::CsPin)),
+        (("spi", "MOSI"), quote!(crate::spi::MosiPin)),
+        (("spi", "MISO"), quote!(crate::spi::MisoPin)),
+        (("spi", "DAT2"), quote!(crate::spi::D2Pin)),
+        (("spi", "DAT3"), quote!(crate::spi::D3Pin)),
     ]
     .into();
 
