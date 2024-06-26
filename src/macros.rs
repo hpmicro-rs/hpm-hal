@@ -15,7 +15,30 @@ macro_rules! peri_trait {
 
         /// Peripheral instance trait.
         #[allow(private_bounds)]
-        pub trait Instance: crate::Peripheral<P = Self> + SealedInstance + crate::rcc::RccPeripheral {
+        pub trait Instance: crate::Peripheral<P = Self> + SealedInstance + crate::sysctl::ClockPeripheral {
+            $($(
+                /// Interrupt for this peripheral.
+                type $irq: crate::interrupt::typelevel::Interrupt;
+            )*)?
+        }
+    };
+}
+
+macro_rules! peri_trait_without_sysclk {
+    (
+        $(irqs: [$($irq:ident),*],)?
+    ) => {
+        #[allow(private_interfaces)]
+        pub(crate) trait SealedInstance {
+            #[allow(unused)]
+            fn info() -> &'static Info;
+            #[allow(unused)]
+            fn state() -> &'static State;
+        }
+
+        /// Peripheral instance trait.
+        #[allow(private_bounds)]
+        pub trait Instance: crate::Peripheral<P = Self> + SealedInstance {
             $($(
                 /// Interrupt for this peripheral.
                 type $irq: crate::interrupt::typelevel::Interrupt;

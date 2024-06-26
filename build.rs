@@ -142,6 +142,8 @@ fn main() {
         (("spi", "MISO"), quote!(crate::spi::MisoPin)),
         (("spi", "DAT2"), quote!(crate::spi::D2Pin)),
         (("spi", "DAT3"), quote!(crate::spi::D3Pin)),
+        (("i2c", "SDA"), quote!(crate::i2c::SdaPin)),
+        (("i2c", "SCL"), quote!(crate::i2c::SclPin)),
     ]
     .into();
 
