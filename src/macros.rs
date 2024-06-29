@@ -91,15 +91,39 @@ macro_rules! spi_cs_pin_trait {
             #[doc = concat!("Get the CS index needed to use this pin as ", stringify!($signal))]
             fn cs_index(&self) -> u8;
         }
-    };
+    }
 }
-
 
 macro_rules! spi_cs_pin_trait_impl {
     (crate::$mod:ident::$trait:ident$(<$mode:ident>)?, $instance:ident, $pin:ident, $alt:expr, $cs_index:expr) => {
         impl crate::$mod::$trait<crate::peripherals::$instance $(, crate::$mod::$mode)?> for crate::peripherals::$pin {
             fn cs_index(&self) -> u8 {
                 $cs_index
+            }
+        }
+    };
+}
+
+// ==========
+// DMA
+
+macro_rules! dma_trait {
+    ($signal:ident, $instance:path$(, $mode:path)?) => {
+        #[doc = concat!(stringify!($signal), " DMA request trait")]
+        pub trait $signal<T: $instance $(, M: $mode)?>: crate::dma::Channel {
+            #[doc = concat!("Get the DMA request number needed to use this channel as", stringify!($signal))]
+            fn request(&self) -> crate::dma::Request;
+        }
+    };
+}
+
+
+#[allow(unused)]
+macro_rules! dma_trait_impl {
+    (crate::$mod:ident::$trait:ident$(<$mode:ident>)?, $instance:ident, $channel:ident, $request:expr) => {
+        impl crate::$mod::$trait<crate::peripherals::$instance $(, crate::$mod::$mode)?> for crate::peripherals::$channel {
+            fn request(&self) -> crate::dma::Request {
+                $request
             }
         }
     };

@@ -5,8 +5,10 @@ use core::marker::PhantomData;
 
 use embassy_hal_internal::{into_ref, Peripheral, PeripheralRef};
 use embassy_sync::waitqueue::AtomicWaker;
+use embedded_hal::delay::DelayNs;
 use embedded_hal::i2c::Operation;
 use hpm_metapac::i2c::vals;
+use riscv::delay::McycleDelay;
 
 use crate::gpio::AnyPin;
 use crate::interrupt::typelevel::Interrupt as _;
@@ -122,6 +124,7 @@ impl<'d> I2c<'d, Blocking> {
     ) -> Self {
         into_ref!(scl, sda);
 
+        // init pins
         // ALT, Open Drain, Pull-up
         scl.ioc_pad().func_ctl().write(|w| {
             w.set_alt_select(scl.alt_num());
@@ -141,6 +144,11 @@ impl<'d> I2c<'d, Blocking> {
             w.set_pe(true);
             w.set_ps(true);
         });
+
+        {
+            use crate::sysctl::*;
+            T::set_clock(ClockConfig::new(ClockMux::CLK_24M, 1));
+        }
 
         Self::new_inner(peri, Some(scl.map_into()), Some(sda.map_into()), config)
     }
@@ -215,6 +223,26 @@ impl<'d, M: Mode> I2c<'d, M> {
             w.set_iicen(true);
             w.set_master(true);
         });
+
+
+        if r.status().read().linescl() == false {
+            defmt::info!("CLK is low, panic");
+            loop {}
+        }
+
+        if r.status().read().linesda() == false {
+            defmt::info!("SDA is low, reset bus");
+            // i2s_gen_reset_signal
+            // generate SCL clock as reset signal
+            r.ctrl().modify(|w| {
+                w.set_reset_len(9);
+                w.set_reset_hold_sckin(true);
+                w.set_reset_on(true);
+            });
+            McycleDelay::new(crate::sysctl::clocks().cpu0.0).delay_ms(100);
+
+            defmt::info!("bus cleared");
+        }
     }
 
     /// Blocking write, restart, read.
@@ -626,8 +654,8 @@ peri_trait!(
 
 pin_trait!(SclPin, Instance);
 pin_trait!(SdaPin, Instance);
-//dma_trait!(RxDma, Instance);
-//dma_trait!(TxDma, Instance);
+
+dma_trait!(I2cDma, Instance);
 
 foreach_peripheral!(
     (i2c, $inst:ident) => {

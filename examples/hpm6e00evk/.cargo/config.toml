@@ -2,14 +2,13 @@
 target = "riscv32imafc-unknown-none-elf"
 
 [target.riscv32imafc-unknown-none-elf]
-# runner = 'riscv64-unknown-elf-gdb -x openocd.gdb'
-# runner = "probe-rs run --chip HPM5361 --protocol jtag --chip-description-path ./HPMicro.yaml"
-runner = "probe-rs run --chip HPM5361 --protocol jtag"
+runner = 'riscv64-unknown-elf-gdb -x ../../openocd.gdb'
+# runner = "probe-rs run --chip HPM6E80 --protocol jtag --chip-description-path ./HPMicro.yaml"
+# runner = "probe-rs run --chip HPM6E80 --protocol jtag"
 
 rustflags = [
     # Target features:
     # The default for imacf is is "+m,+a,+c,+f"
-    # HPM6xxx does not have B extension
     "-C",
     "target-feature=+d,+zba,+zbb,+zbc,+zbs",
     # Linker scripts:

@@ -45,6 +45,8 @@ pub mod gpio;
 pub mod mbx;
 pub mod sysctl;
 
+pub mod dma;
+
 // other peripherals
 pub mod i2c;
 pub mod uart;
@@ -135,12 +137,13 @@ pub struct Config {
 }
 
 pub fn init(config: Config) -> Peripherals {
+    #[cfg(hpm53)]
+    gpio::init_py_pins_as_gpio();
+
+    // board_init_clock
     unsafe {
         sysctl::init(config.sysctl);
     }
-
-    #[cfg(hpm53)]
-    gpio::init_py_pins_as_gpio();
 
     unsafe {
         gpio::input_future::init_gpio0_irq();

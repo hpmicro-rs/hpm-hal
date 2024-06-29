@@ -1,0 +1,34 @@
+[build]
+target = "riscv32imafc-unknown-none-elf"
+
+[target.riscv32imafc-unknown-none-elf]
+# runner = 'riscv64-unknown-elf-gdb -x ../../openocd.gdb'
+runner = "probe-rs run --chip HPM5361 --protocol jtag --chip-description-path ../../HPMicro.yaml"
+# runner = "probe-rs run --chip HPM5361 --protocol jtag"
+
+rustflags = [
+    # Target features:
+    # The default for imacf is is "+m,+a,+c,+f"
+    "-C",
+    "target-feature=+d,+zba,+zbb,+zbc,+zbs",
+    # Linker scripts:
+    "-C",
+    "link-arg=-Tmemory.x",
+    "-C",
+    "link-arg=-Tdevice.x", # __VECTORED_INTERRUPTS
+    "-C",
+    "link-arg=-Tlink-fixed.x",
+    "-C",
+    "link-arg=-Tdefmt.x",
+    "-C",
+    "link-arg=-nmagic",
+
+    # "--emit", "obj",
+    # "--emit", "asm",
+]
+
+[unstable]
+build-std = ["core"]
+
+[env]
+DEFMT_LOG = "info"
