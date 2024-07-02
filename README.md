@@ -35,8 +35,6 @@ This crate is a working-in-progress and not ready for use.
 
 - `?` means requires demo verification
 
-您可以根据需要添加或删除列来表示不同的外设。对于每个 MCU 型号,请在相应的单元格中使用 `X` 或其他符号来指示是否支持该外设。"其他"一列可用于列出任何其他特殊功能或外设。
-
 ### Toolchain Support
 
 - [probe-rs]
