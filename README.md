@@ -25,15 +25,17 @@ This crate is a working-in-progress and not ready for use.
   - [ ] CPU1 support - how to?
 
 | MCU Family | Demo | PAC | SYSCTL | GPIO | UART | I2C | MBX | ADC | DMA |
-|------------|------|-----|--------|------|------|-----|-----|-----|-----|
-| HPM6700    |      |  Y  |        |      |      |     |     |     |     |
-| HPM6300    |   Y  |  Y  |        |      |      |     |     |     |     |
-| HPM6200    |      |  Y  |        |      |      |     |     |     |     |
-| HPM5300    |   Y  |  Y  |   Y    |   Y  |   Y  |  Y  |  Y  |     |     |
-| HPM6800    |      |  Y  |        |      |      |     |     |     |     |
-| HPM6E00    |   Y  |  Y  |   Y    |   Y  |   Y  |  ?  |  ?  |     |     |
+|------------|:----:|:---:|:------:|:----:|:----:|:---:|:---:|:---:|:---:|
+| HPM6700    |      |  ✓  |        |      |      |     |     |     |     |
+| HPM6300    |  ✓   |  ✓  |        |      |      |     |     |     |     |
+| HPM6200    |      |  ✓  |        |      |      |     |     |     |     |
+| HPM5300    |  ✓   |  ✓  |   ✓    |  ✓   |  ✓   |  ✓  |  ✓  |     |     |
+| HPM6800    |      |  ✓  |        |      |      |     |     |     |     |
+| HPM6E00    |  ✓   |  ✓  |   ✓    |  ✓   |  ✓   |  ?  |  ?  |     |     |
 
-- `?` means requires demo verification
+- ✓: Implemented
+- ?: Requires demo verification
+- Blank: Not implemented
 
 ### Toolchain Support
 
