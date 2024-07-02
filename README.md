@@ -11,16 +11,31 @@ This crate is a working-in-progress and not ready for use.
   - [x] basic start up code: linker, startup
   - [x] Embassy time driver using MCHTMR
   - [x] SYSCTL init
-  - [x] PLL setting (only PLL0 is supported, since others might be unsafe)
-  - [x] GPIO, Flex, Input, Output
-    - [x] Async GPIO
+  - [x] PLL setting
+  - [x] GPIO, Flex, Input, Output, Async
   - [x] RTT support (defmt, defmt-rtt)
   - [x] UART blocking TX, RX
   - [x] I2C blocking
   - [x] MBX, blocking and async
-- MCUs
-  - HPM5300
-  - HPM6E00, without PLL setting
+  - [x] FEMC
+    - [x] SDRAM init
+- Long term Plans
+  - [ ] andes-riscv for specific CSRs
+  - [ ] hpm-riscv-rt for customized runtime (riscv-rt is not fit)
+  - [ ] CPU1 support - how to?
+
+| MCU Family | Demo | PAC | SYSCTL | GPIO | UART | I2C | MBX | ADC | DMA |
+|------------|------|-----|--------|------|------|-----|-----|-----|-----|
+| HPM6700    |      |  Y  |        |      |      |     |     |     |     |
+| HPM6300    |   Y  |  Y  |        |      |      |     |     |     |     |
+| HPM6200    |      |  Y  |        |      |      |     |     |     |     |
+| HPM5300    |   Y  |  Y  |   Y    |   Y  |   Y  |  Y  |  Y  |     |     |
+| HPM6800    |      |  Y  |        |      |      |     |     |     |     |
+| HPM6E00    |   Y  |  Y  |   Y    |   Y  |   Y  |  ?  |  ?  |     |     |
+
+- `?` means requires demo verification
+
+您可以根据需要添加或删除列来表示不同的外设。对于每个 MCU 型号,请在相应的单元格中使用 `X` 或其他符号来指示是否支持该外设。"其他"一列可用于列出任何其他特殊功能或外设。
 
 ### Toolchain Support
 
