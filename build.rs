@@ -137,12 +137,17 @@ fn main() {
         (("uart", "CTS"), quote!(crate::uart::CtsPin)),
         (("uart", "RTS"), quote!(crate::uart::RtsPin)),
         (("uart", "DE"), quote!(crate::uart::DePin)),
+        (("spi", "SCLK"), quote!(crate::spi::SclkPin)),
+        (("spi", "CS0"), quote!(crate::spi::CsPin)),
+        (("spi", "CS1"), quote!(crate::spi::CsPin)),
+        (("spi", "CS2"), quote!(crate::spi::CsPin)),
+        (("spi", "CS3"), quote!(crate::spi::CsPin)),
+        (("spi", "MOSI"), quote!(crate::spi::MosiPin)),
+        (("spi", "MISO"), quote!(crate::spi::MisoPin)),
+        (("spi", "DAT2"), quote!(crate::spi::D2Pin)),
+        (("spi", "DAT3"), quote!(crate::spi::D3Pin)),
         (("i2c", "SDA"), quote!(crate::i2c::SdaPin)),
         (("i2c", "SCL"), quote!(crate::i2c::SclPin)),
-        //(("spi", "MISO"), quote!(crate::spi::MisoPin)),
-        //(("spi", "MOSI"), quote!(crate::spi::MosiPin)),
-        //(("spi", "SCK"), quote!(crate::spi::SckPin)),
-        //(("spi", "CS0"), quote!(crate::spi::Cs0Pin)),
     ]
     .into();
 
@@ -161,6 +166,24 @@ fn main() {
                         pin_trait_impl!(#tr, #peri, #pin_name, #alt);
                     })
                 }
+
+                // Spi is special
+                if regs.kind == "spi" && pin.signal.starts_with("CS") {
+                    let peri = format_ident!("{}", p.name);
+                    let pin_name = format_ident!("{}", pin.pin);
+                    let alt = pin.alt.unwrap_or(0);
+                    let cs_index: u8 = match pin.signal {
+                        "CS0" => 1,
+                        "CS1" => 2,
+                        "CS2" => 4,
+                        "CS3" => 8,
+                        _ => unreachable!(),
+                    };
+                    g.extend(quote! {
+                        spi_cs_pin_trait_impl!(crate::spi::CsIndexPin, #peri, #pin_name, #alt, #cs_index);
+                    });
+                }
+
                 // ADC is special
                 if regs.kind == "adc" {
                     // TODO
