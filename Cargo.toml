@@ -40,6 +40,8 @@ embedded-io = "0.6.1"
 nb = "1.1.0"
 futures-util = { version = "0.3.30", optional = true, default-features = false }
 
+xhci = "0.9.2"
+bitfield-struct = "0.8"
 
 [build-dependencies]
 # git = "https://github.com/hpmicro-rs/hpm-metapac.git",
