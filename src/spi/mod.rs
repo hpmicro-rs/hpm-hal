@@ -8,16 +8,29 @@
 use core::marker::PhantomData;
 use core::ptr;
 
+use embassy_futures::join::join;
 use embassy_hal_internal::{into_ref, Peripheral, PeripheralRef};
 use embassy_sync::waitqueue::AtomicWaker;
 // re-export
-pub use embedded_hal::spi::{Mode as SpiMode, MODE_0, MODE_1, MODE_2, MODE_3};
+pub use embedded_hal::spi::{Mode, MODE_0, MODE_1, MODE_2, MODE_3};
 pub use hpm_metapac::spi::vals::{AddrLen, AddrPhaseFormat, DataPhaseFormat, TransMode};
 
-use crate::dma::word;
+use self::consts::*;
+use crate::dma::{self, word, ChannelAndRequest};
 use crate::gpio::AnyPin;
-use crate::mode::{Blocking, Mode};
+use crate::mode::{Async, Blocking, Mode as PeriMode};
 use crate::time::Hertz;
+
+#[cfg(any(hpm53, hpm68, hpm6e))]
+mod consts {
+    pub const TRANSFER_COUNT_MAX: usize = 0xFFFFFFFF;
+    pub const FIFO_SIZE: usize = 8;
+}
+#[cfg(any(hpm67, hpm63, hpm62))]
+mod consts {
+    pub const TRANSFER_COUNT_MAX: usize = 512;
+    pub const FIFO_SIZE: usize = 4;
+}
 
 // ==========
 // Helper enums
@@ -123,7 +136,7 @@ pub struct Config {
     /// Whether to use LSB.
     pub bit_order: BitOrder,
     /// Mode
-    pub mode: SpiMode,
+    pub mode: Mode,
     /// SPI frequency.
     pub frequency: Hertz,
     /// Timings
@@ -192,7 +205,7 @@ pub enum Error {
 
 /// SPI driver.
 #[allow(unused)]
-pub struct Spi<'d, M: Mode> {
+pub struct Spi<'d, M: PeriMode> {
     info: &'static Info,
     state: &'static State,
     kernel_clock: Hertz,
@@ -201,8 +214,10 @@ pub struct Spi<'d, M: Mode> {
     miso: Option<PeripheralRef<'d, AnyPin>>,
     d2: Option<PeripheralRef<'d, AnyPin>>,
     d3: Option<PeripheralRef<'d, AnyPin>>,
-    current_word_size: word_impl::Config,
+    tx_dma: Option<ChannelAndRequest<'d>>,
+    rx_dma: Option<ChannelAndRequest<'d>>,
     _phantom: PhantomData<M>,
+    current_word_size: word_impl::Config,
 }
 
 impl<'d> Spi<'d, Blocking> {
@@ -232,6 +247,8 @@ impl<'d> Spi<'d, Blocking> {
             Some(miso.map_into()),
             None,
             None,
+            None,
+            None,
             config,
         )
     }
@@ -259,10 +276,13 @@ impl<'d> Spi<'d, Blocking> {
             Some(miso.map_into()),
             None,
             None,
+            None,
+            None,
             config,
         )
     }
 
+    /// Create a new blocking SPI driver, in TX-only mode (only MOSI pin, no MISO).
     pub fn new_blocking_txonly<T: Instance>(
         peri: impl Peripheral<P = T> + 'd,
         sclk: impl Peripheral<P = impl SclkPin<T>> + 'd,
@@ -286,8 +306,25 @@ impl<'d> Spi<'d, Blocking> {
             None,
             None,
             None,
+            None,
+            None,
             config,
         )
+    }
+
+    /// Create a new SPI driver, in TX-only mode, without SCK pin.
+    pub fn new_blocking_txonly_nosck<T: Instance>(
+        peri: impl Peripheral<P = T> + 'd,
+        mosi: impl Peripheral<P = impl MosiPin<T>> + 'd,
+        config: Config,
+    ) -> Self {
+        into_ref!(mosi);
+
+        T::add_resource_group(0);
+
+        mosi.set_as_alt(mosi.alt_num());
+
+        Self::new_inner(peri, None, Some(mosi.map_into()), None, None, None, None, None, config)
     }
 
     pub fn new_blocking_quad<T: Instance>(
@@ -315,6 +352,7 @@ impl<'d> Spi<'d, Blocking> {
         d3.set_as_alt(d3.alt_num());
 
         let cs_index = cs.cs_index();
+        #[cfg(ip_feature_spi_cs_select)]
         T::info().regs.ctrl().modify(|w| w.set_cs_en(cs_index));
 
         Self::new_inner(
@@ -324,12 +362,244 @@ impl<'d> Spi<'d, Blocking> {
             Some(miso.map_into()),
             Some(d2.map_into()),
             Some(d3.map_into()),
+            None,
+            None,
             config,
         )
     }
 }
 
-impl<'d, M: Mode> Spi<'d, M> {
+impl<'d> Spi<'d, Async> {
+    /// Create a new async SPI driver.
+    pub fn new<T: Instance>(
+        peri: impl Peripheral<P = T> + 'd,
+        sclk: impl Peripheral<P = impl SclkPin<T>> + 'd,
+        mosi: impl Peripheral<P = impl MosiPin<T>> + 'd,
+        miso: impl Peripheral<P = impl MisoPin<T>> + 'd,
+        tx_dma: impl Peripheral<P = impl TxDma<T>> + 'd,
+        rx_dma: impl Peripheral<P = impl RxDma<T>> + 'd,
+        config: Config,
+    ) -> Self {
+        into_ref!(sclk, mosi, miso);
+
+        T::add_resource_group(0);
+
+        mosi.set_as_alt(mosi.alt_num());
+        miso.set_as_alt(miso.alt_num());
+        sclk.ioc_pad().func_ctl().modify(|w| {
+            w.set_alt_select(sclk.alt_num());
+            w.set_loop_back(true);
+        });
+
+        Self::new_inner(
+            peri,
+            Some(sclk.map_into()),
+            Some(mosi.map_into()),
+            Some(miso.map_into()),
+            None,
+            None,
+            new_dma!(tx_dma),
+            new_dma!(rx_dma),
+            config,
+        )
+    }
+
+    pub fn new_rxonly<T: Instance>(
+        peri: impl Peripheral<P = T> + 'd,
+        sclk: impl Peripheral<P = impl SclkPin<T>> + 'd,
+        miso: impl Peripheral<P = impl MisoPin<T>> + 'd,
+        rx_dma: impl Peripheral<P = impl RxDma<T>> + 'd,
+        config: Config,
+    ) -> Self {
+        into_ref!(sclk, miso);
+
+        T::add_resource_group(0);
+
+        miso.set_as_alt(miso.alt_num());
+        sclk.ioc_pad().func_ctl().modify(|w| {
+            w.set_alt_select(sclk.alt_num());
+            w.set_loop_back(true);
+        });
+
+        Self::new_inner(
+            peri,
+            Some(sclk.map_into()),
+            None,
+            Some(miso.map_into()),
+            None,
+            None,
+            None,
+            new_dma!(rx_dma),
+            config,
+        )
+    }
+
+    /// Create a new blocking SPI driver, in TX-only mode (only MOSI pin, no MISO).
+    pub fn new_txonly<T: Instance>(
+        peri: impl Peripheral<P = T> + 'd,
+        sclk: impl Peripheral<P = impl SclkPin<T>> + 'd,
+        mosi: impl Peripheral<P = impl MosiPin<T>> + 'd,
+        tx_dma: impl Peripheral<P = impl TxDma<T>> + 'd,
+        config: Config,
+    ) -> Self {
+        into_ref!(sclk, mosi);
+
+        T::add_resource_group(0);
+
+        mosi.set_as_alt(mosi.alt_num());
+        sclk.ioc_pad().func_ctl().modify(|w| {
+            w.set_alt_select(sclk.alt_num());
+            w.set_loop_back(true);
+        });
+
+        Self::new_inner(
+            peri,
+            Some(sclk.map_into()),
+            Some(mosi.map_into()),
+            None,
+            None,
+            None,
+            new_dma!(tx_dma),
+            None,
+            config,
+        )
+    }
+
+    /// Create a new SPI driver, in TX-only mode, without SCK pin.
+    pub fn new_txonly_nosck<T: Instance>(
+        peri: impl Peripheral<P = T> + 'd,
+        mosi: impl Peripheral<P = impl MosiPin<T>> + 'd,
+        tx_dma: impl Peripheral<P = impl TxDma<T>> + 'd,
+        config: Config,
+    ) -> Self {
+        into_ref!(mosi);
+
+        T::add_resource_group(0);
+
+        mosi.set_as_alt(mosi.alt_num());
+
+        Self::new_inner(
+            peri,
+            None,
+            Some(mosi.map_into()),
+            None,
+            None,
+            None,
+            new_dma!(tx_dma),
+            None,
+            config,
+        )
+    }
+
+    /// SPI write, using DMA.
+    pub async fn write<W: Word>(&mut self, data: &[W]) -> Result<(), Error> {
+        if data.is_empty() {
+            return Ok(());
+        }
+
+        let r = self.info.regs;
+
+        self.set_word_size(W::CONFIG);
+        self.configure_transfer(data.len(), 0, &TransferConfig::default())?;
+
+        r.ctrl().modify(|w| w.set_txdmaen(true));
+
+        let tx_dst = r.data().as_ptr() as *mut W;
+        let mut opts = dma::TransferOptions::default();
+        opts.burst = dma::Burst::from_size(FIFO_SIZE / 2);
+        let tx_f = unsafe { self.tx_dma.as_mut().unwrap().write(data, tx_dst, opts) };
+
+        tx_f.await;
+
+        r.ctrl().modify(|w| w.set_txdmaen(false));
+
+        // TODO: should wait tx done via INTRST
+        // In embassy-stm32 this is a busy wait
+
+        Ok(())
+    }
+
+    pub async fn read<W: Word>(&mut self, data: &mut [W]) -> Result<(), Error> {
+        if data.is_empty() {
+            return Ok(());
+        }
+
+        let r = self.info.regs;
+
+        self.set_word_size(W::CONFIG);
+        let mut config = TransferConfig::default();
+        config.transfer_mode = TransMode::READ_ONLY;
+        config.dummy_cnt = data.len() as u8;
+        self.configure_transfer(0, data.len(), &config)?;
+
+        let rx_src = r.data().as_ptr() as *mut W;
+        let rx_f = unsafe { self.rx_dma.as_mut().unwrap().read(rx_src, data, Default::default()) };
+
+        r.ctrl().modify(|w| w.set_rxdmaen(true));
+
+        rx_f.await;
+
+        r.ctrl().modify(|w| w.set_rxdmaen(false));
+
+        Ok(())
+    }
+
+    async fn transfer_inner<W: Word>(
+        &mut self,
+        read: *mut [W],
+        write: *const [W],
+        config: &TransferConfig,
+    ) -> Result<(), Error> {
+        // in dma mode,
+        assert_eq!(read.len(), write.len());
+
+        let r = self.info.regs;
+
+        self.set_word_size(W::CONFIG);
+        self.configure_transfer(write.len(), read.len(), config)?;
+
+        r.ctrl().modify(|w| {
+            w.set_rxdmaen(true);
+            w.set_txdmaen(true);
+        });
+
+        let tx_dst = r.data().as_ptr() as *mut W;
+        let mut opts = dma::TransferOptions::default();
+        opts.burst = dma::Burst::from_size(FIFO_SIZE / 2);
+        let tx_f = unsafe { self.tx_dma.as_mut().unwrap().write_raw(write, tx_dst, opts) };
+
+        let rx_src = r.data().as_ptr() as *mut W;
+        let rx_f = unsafe { self.rx_dma.as_mut().unwrap().read_raw(rx_src, read, Default::default()) };
+
+        join(tx_f, rx_f).await;
+
+        r.ctrl().modify(|w| {
+            w.set_rxdmaen(false);
+            w.set_txdmaen(false);
+        });
+
+        Ok(())
+    }
+
+    /// Bidirectional transfer, using DMA.
+    pub async fn transfer<W: Word>(
+        &mut self,
+        read: &mut [W],
+        write: &[W],
+        config: &TransferConfig,
+    ) -> Result<(), Error> {
+        self.transfer_inner(read, write, config).await
+    }
+
+    /// In-place bidirectional transfer, using DMA.
+    ///
+    /// This writes the contents of `data` on MOSI, and puts the received data on MISO in `data`, at the same time.
+    pub async fn transfer_in_place<W: Word>(&mut self, data: &mut [W], config: &TransferConfig) -> Result<(), Error> {
+        self.transfer_inner(data, data, config).await
+    }
+}
+
+impl<'d, M: PeriMode> Spi<'d, M> {
     fn new_inner<T: Instance>(
         _peri: impl Peripheral<P = T> + 'd,
         sclk: Option<PeripheralRef<'d, AnyPin>>,
@@ -337,6 +607,8 @@ impl<'d, M: Mode> Spi<'d, M> {
         miso: Option<PeripheralRef<'d, AnyPin>>,
         d2: Option<PeripheralRef<'d, AnyPin>>,
         d3: Option<PeripheralRef<'d, AnyPin>>,
+        tx_dma: Option<ChannelAndRequest<'d>>,
+        rx_dma: Option<ChannelAndRequest<'d>>,
         config: Config,
     ) -> Self {
         let mut this = Self {
@@ -348,6 +620,8 @@ impl<'d, M: Mode> Spi<'d, M> {
             miso,
             d2,
             d3,
+            tx_dma,
+            rx_dma,
             current_word_size: <u8 as SealedWord>::CONFIG,
             _phantom: PhantomData,
         };
@@ -424,10 +698,8 @@ impl<'d, M: Mode> Spi<'d, M> {
         self.current_word_size = word_size;
     }
 
-    fn setup_transfer_config(&mut self, data_len: usize, config: &TransferConfig) -> Result<(), Error> {
-        // For spi_v67, the size of data must <= 512
-        #[cfg(spi_v67)]
-        if data_len.len() > 512 {
+    fn configure_transfer(&mut self, write_len: usize, read_len: usize, config: &TransferConfig) -> Result<(), Error> {
+        if write_len > TRANSFER_COUNT_MAX {
             return Err(Error::BufferTooLong);
         }
 
@@ -456,46 +728,44 @@ impl<'d, M: Mode> Spi<'d, M> {
             w.set_slvdataonly(config.slave_data_only_mode);
             w.set_cmden(config.cmd.is_some());
             w.set_addren(config.addr.is_some());
-            // Addr fmt: false: 1 line, true: 2/4 lines(same with data, aka `dualquad` field)
             w.set_addrfmt(config.addr_phase);
             w.set_dualquad(config.data_phase);
             w.set_tokenen(false);
-            #[cfg(spi_v67)]
+            #[cfg(not(ip_feature_spi_new_trans_count))]
             match config.transfer_mode {
                 TransMode::WRITE_READ_TOGETHER
                 | TransMode::READ_DUMMY_WRITE
                 | TransMode::WRITE_DUMMY_READ
                 | TransMode::READ_WRITE
                 | TransMode::WRITE_READ => {
-                    w.set_wrtrancnt(data_len as u16 - 1);
-                    w.set_rdtrancnt(data_len as u16 - 1);
+                    w.set_wrtrancnt(write_len as u16 - 1);
+                    w.set_rdtrancnt(read_len as u16 - 1);
                 }
-                TransMode::WRITE_ONLY | TransMode::DUMMY_WRITE => w.set_wrtrancnt(data_len as u16 - 1),
-                TransMode::READ_ONLY | TransMode::DUMMY_READ => w.set_rdtrancnt(data_len as u16 - 1),
+                TransMode::WRITE_ONLY | TransMode::DUMMY_WRITE => w.set_wrtrancnt(write_len as u16 - 1),
+                TransMode::READ_ONLY | TransMode::DUMMY_READ => w.set_rdtrancnt(read_len as u16 - 1),
                 TransMode::NO_DATA => (),
                 _ => (),
             }
             w.set_tokenvalue(false);
             w.set_dummycnt(config.dummy_cnt);
-            w.set_rdtrancnt(0);
             w.set_transmode(config.transfer_mode);
         });
 
-        #[cfg(any(spi_v53, spi_v68))]
+        #[cfg(ip_feature_spi_new_trans_count)]
         match config.transfer_mode {
             TransMode::WRITE_READ_TOGETHER
             | TransMode::READ_DUMMY_WRITE
             | TransMode::WRITE_DUMMY_READ
             | TransMode::READ_WRITE
             | TransMode::WRITE_READ => {
-                r.wr_trans_cnt().write(|w| w.set_wrtrancnt(data_len as u32 - 1));
-                r.rd_trans_cnt().write(|w| w.set_rdtrancnt(data_len as u32 - 1));
+                r.wr_trans_cnt().write(|w| w.set_wrtrancnt(write_len as u32 - 1));
+                r.rd_trans_cnt().write(|w| w.set_rdtrancnt(read_len as u32 - 1));
             }
             TransMode::WRITE_ONLY | TransMode::DUMMY_WRITE => {
-                r.wr_trans_cnt().write(|w| w.set_wrtrancnt(data_len as u32 - 1))
+                r.wr_trans_cnt().write(|w| w.set_wrtrancnt(write_len as u32 - 1))
             }
             TransMode::READ_ONLY | TransMode::DUMMY_READ => {
-                r.rd_trans_cnt().write(|w| w.set_rdtrancnt(data_len as u32 - 1))
+                r.rd_trans_cnt().write(|w| w.set_rdtrancnt(read_len as u32 - 1))
             }
             TransMode::NO_DATA => (),
             _ => (),
@@ -523,12 +793,46 @@ impl<'d, M: Mode> Spi<'d, M> {
         Ok(())
     }
 
-    // Write in master mode
-    pub fn blocking_write<W: Word>(&mut self, data: &[W], config: &TransferConfig) -> Result<(), Error> {
+    // In blocking mode, the final speed is not faster than normal mode
+    pub fn blocking_datamerge_write(&mut self, data: &[u8], config: &TransferConfig) -> Result<(), Error> {
         let r = self.info.regs;
 
         flush_rx_fifo(r);
-        self.setup_transfer_config(data.len(), config)?;
+
+        r.trans_fmt().modify(|w| {
+            w.set_datamerge(true);
+        });
+        self.set_word_size(<u8 as SealedWord>::CONFIG);
+        self.configure_transfer(data.len(), 0, config)?;
+        for chunk in data.chunks(4) {
+            let word = match chunk.len() {
+                4 => u32::from_le_bytes(chunk.try_into().unwrap()), // LSB send first
+                3 => u32::from_be_bytes([0, chunk[2], chunk[1], chunk[0]]),
+                2 => u32::from_be_bytes([0, 0, chunk[1], chunk[0]]),
+                1 => u32::from_be_bytes([0, 0, 0, chunk[0]]),
+                _ => unreachable!(),
+            };
+
+            while r.status().read().txfull() {}
+            unsafe {
+                ptr::write_volatile(r.data().as_ptr() as *mut u32, word);
+            }
+        }
+
+        while self.info.regs.status().read().spiactive() {}
+        r.trans_fmt().modify(|w| {
+            w.set_datamerge(false);
+        });
+
+        Ok(())
+    }
+
+    // Write in master mode
+    pub fn blocking_write<W: Word>(&mut self, data: &[W]) -> Result<(), Error> {
+        let r = self.info.regs;
+        let config = TransferConfig::default();
+
+        self.configure_transfer(data.len(), 0, &config)?;
         self.set_word_size(W::CONFIG);
 
         // Write data byte by byte
@@ -545,19 +849,20 @@ impl<'d, M: Mode> Spi<'d, M> {
         Ok(())
     }
 
-    pub fn blocking_read<W: Word>(&mut self, data: &mut [W], config: &TransferConfig) -> Result<(), Error> {
+    pub fn blocking_read<W: Word>(&mut self, data: &mut [W]) -> Result<(), Error> {
         let r = self.info.regs;
+        let mut config = TransferConfig::default();
+        config.transfer_mode = TransMode::READ_ONLY;
 
-        flush_rx_fifo(r);
-        self.setup_transfer_config(data.len(), config)?;
+        self.configure_transfer(0, data.len(), &config)?;
         self.set_word_size(W::CONFIG);
 
         for b in data {
-            while r.status().read().rxempty() {}
+            // while r.status().read().rxempty() {}
+            while (r.status().read().rxnum_7_6() << 5) | r.status().read().rxnum_5_0() == 0 {}
             *b = unsafe { ptr::read_volatile(r.data().as_ptr() as *const W) }
         }
 
-        // no need to wait rx finished, because the data is already read out
         Ok(())
     }
 
@@ -570,9 +875,8 @@ impl<'d, M: Mode> Spi<'d, M> {
     ) -> Result<(), Error> {
         let r = self.info.regs;
 
-        flush_rx_fifo(r);
         let len = read.len().max(write.len());
-        self.setup_transfer_config(len, &config)?;
+        self.configure_transfer(write.len(), read.len(), &config)?;
         self.set_word_size(W::CONFIG);
 
         for i in 0..len {
@@ -591,11 +895,14 @@ impl<'d, M: Mode> Spi<'d, M> {
     }
 
     /// Blocking in-place bidirectional transfer.
-    pub fn blocking_transfer_iplace<W: Word>(&mut self, words: &mut [W], config: &TransferConfig) -> Result<(), Error> {
+    pub fn blocking_transfer_inplace<W: Word>(
+        &mut self,
+        words: &mut [W],
+        config: &TransferConfig,
+    ) -> Result<(), Error> {
         let r = self.info.regs;
 
-        flush_rx_fifo(r);
-        self.setup_transfer_config(words.len(), &config)?;
+        self.configure_transfer(words.len(), words.len(), &config)?;
         self.set_word_size(W::CONFIG);
 
         for i in 0..words.len() {
@@ -676,6 +983,9 @@ pin_trait!(MosiPin, Instance);
 pin_trait!(MisoPin, Instance);
 pin_trait!(D2Pin, Instance);
 pin_trait!(D3Pin, Instance);
+
+dma_trait!(TxDma, Instance);
+dma_trait!(RxDma, Instance);
 
 foreach_peripheral!(
     (spi, $inst:ident) => {
@@ -771,21 +1081,17 @@ impl embedded_hal::spi::Error for Error {
     }
 }
 
-impl<'d, M: Mode> embedded_hal::spi::ErrorType for Spi<'d, M> {
+impl<'d, M: PeriMode> embedded_hal::spi::ErrorType for Spi<'d, M> {
     type Error = Error;
 }
 
-impl<'d, M: Mode> embedded_hal::spi::SpiBus for Spi<'d, M> {
+impl<'d, M: PeriMode> embedded_hal::spi::SpiBus for Spi<'d, M> {
     fn write(&mut self, buf: &[u8]) -> Result<(), Self::Error> {
-        self.blocking_write(buf, &TransferConfig::default())
+        self.blocking_write(buf)
     }
 
     fn read(&mut self, buf: &mut [u8]) -> Result<(), Self::Error> {
-        let config = TransferConfig {
-            transfer_mode: TransMode::READ_ONLY,
-            ..Default::default()
-        };
-        self.blocking_read(buf, &config)
+        self.blocking_read(buf)
     }
 
     fn transfer(&mut self, read: &mut [u8], write: &[u8]) -> Result<(), Self::Error> {
@@ -801,11 +1107,37 @@ impl<'d, M: Mode> embedded_hal::spi::SpiBus for Spi<'d, M> {
             transfer_mode: TransMode::WRITE_READ,
             ..Default::default()
         };
-        self.blocking_transfer_iplace(words, &config)
+        self.blocking_transfer_inplace(words, &config)
     }
 
     fn flush(&mut self) -> Result<(), Self::Error> {
         self.blocking_flush();
         Ok(())
+    }
+}
+
+impl<'d, W: Word> embedded_hal_async::spi::SpiBus<W> for Spi<'d, Async> {
+    async fn flush(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    async fn write(&mut self, words: &[W]) -> Result<(), Self::Error> {
+        self.write(words).await
+    }
+
+    async fn read(&mut self, words: &mut [W]) -> Result<(), Self::Error> {
+        self.read(words).await
+    }
+
+    async fn transfer(&mut self, read: &mut [W], write: &[W]) -> Result<(), Self::Error> {
+        let mut options = TransferConfig::default();
+        options.transfer_mode = TransMode::WRITE_READ_TOGETHER;
+        self.transfer(read, write, &options).await
+    }
+
+    async fn transfer_in_place(&mut self, words: &mut [W]) -> Result<(), Self::Error> {
+        let mut options = TransferConfig::default();
+        options.transfer_mode = TransMode::WRITE_READ_TOGETHER;
+        self.transfer_in_place(words, &options).await
     }
 }

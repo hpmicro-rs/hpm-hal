@@ -1,6 +1,6 @@
 //! DMA word sizes
 
-use crate::pac;
+use hpm_metapac::dma::vals;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -19,6 +19,15 @@ impl WordSize {
             Self::TwoBytes => 2,
             Self::FourBytes => 4,
             Self::EightBytes => 8,
+        }
+    }
+
+    pub(crate) fn width(&self) -> vals::Width {
+        match self {
+            Self::OneByte => vals::Width::BYTE,
+            Self::TwoBytes => vals::Width::HALF_WORD,
+            Self::FourBytes => vals::Width::WORD,
+            Self::EightBytes => vals::Width::DOUBLE_WORD,
         }
     }
 

@@ -1,4 +1,6 @@
 //! General Purpose Input/Output
+//!
+//! - [ ] handle FGPIO, PGPIO, and BGPIO
 #![macro_use]
 use core::convert::Infallible;
 
@@ -26,16 +28,8 @@ impl<'d> Flex<'d> {
     #[inline]
     pub fn set_as_input(&mut self, pull: Pull) {
         critical_section::with(|_| {
-            self.pin
-                .gpio()
-                .oe(self.pin._port())
-                .clear()
-                .modify(|w| w.set_direction(1 << self.pin.pin()));
-
-            self.pin.ioc_pad().pad_ctl().modify(|w| {
-                w.set_pe(pull != Pull::None); // pull enable
-                w.set_ps(pull == Pull::Up); // pull select
-            });
+            self.pin.set_as_input();
+            self.pin.set_pull(pull);
         });
     }
 
@@ -44,16 +38,14 @@ impl<'d> Flex<'d> {
     /// The pin level will be whatever was set before (or low by default). If you want it to begin
     /// at a specific level, call `set_high`/`set_low` on the pin first.
     #[inline]
+    #[allow(unused)]
     pub fn set_as_output(&mut self, speed: Speed) {
         critical_section::with(|_| {
-            self.pin
-                .gpio()
-                .oe(self.pin._port())
-                .set()
-                .write(|r| r.set_direction(1 << self.pin.pin()));
+            self.pin.set_as_output();
 
+            #[cfg(not(hpm67))]
             self.pin.ioc_pad().pad_ctl().modify(|w| {
-                w.set_spd(speed as u8); // speed
+                w.set_spd(speed as u8);
             });
         });
     }
@@ -71,7 +63,10 @@ impl<'d> Flex<'d> {
     // PAD_CTL related functions
     #[inline]
     pub fn set_schmitt_trigger(&mut self, enable: bool) {
+        #[cfg(not(hpm67))]
         self.pin.ioc_pad().pad_ctl().modify(|w| w.set_hys(enable));
+        #[cfg(hpm67)]
+        self.pin.ioc_pad().pad_ctl().modify(|w| w.set_smt(enable));
     }
 
     #[inline]
@@ -82,6 +77,7 @@ impl<'d> Flex<'d> {
         });
     }
 
+    #[cfg(not(hpm67))]
     #[inline]
     pub fn set_pull_up_strength(&mut self, strength: PullStrength) {
         self.pin.ioc_pad().pad_ctl().modify(|w| w.set_prs(strength as u8));
@@ -221,10 +217,13 @@ pub enum Pull {
 /// * `Max`: Maximum frequency slew rate (200MHz)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Speed {
+    #[cfg(gpio_v53)]
     Slow = 0b00,
+    #[cfg(gpio_v53)]
     Medium = 0b01,
     #[default]
     Fast = 0b10,
+    #[cfg(gpio_v53)]
     Max = 0b11,
 }
 
@@ -271,6 +270,7 @@ impl<'d> Input<'d> {
     }
 
     // Only available to PullUp, for PullDown, the only option is 100kOhm
+    #[cfg(not(hpm67))]
     #[inline]
     pub fn set_pull_strength(&mut self, strength: PullStrength) {
         self.pin.set_pull_up_strength(strength);
@@ -475,6 +475,35 @@ pub(crate) trait SealedPin: Sized {
     }
 
     #[inline]
+    fn set_as_input(&self) {
+        self.gpio()
+            .oe(self._port())
+            .clear()
+            .modify(|w| w.set_direction(1 << self._pin()));
+    }
+
+    #[inline]
+    fn set_as_output(&self) {
+        self.gpio()
+            .oe(self._port())
+            .set()
+            .write(|r| r.set_direction(1 << self._pin()));
+    }
+
+    #[inline]
+    fn set_pull(&self, pull: Pull) {
+        self.ioc_pad().pad_ctl().modify(|w| {
+            w.set_pe(pull != Pull::None); // pull enable
+            w.set_ps(pull == Pull::Up); // pull select
+        });
+    }
+
+    #[inline]
+    fn is_high(&self) -> bool {
+        self.gpio().di(self._port()).value().read().0 & (1 << self._pin()) != 0
+    }
+
+    #[inline]
     fn set_as_analog(&self) {
         self.ioc_pad().func_ctl().modify(|w| w.set_analog(true));
     }
@@ -482,6 +511,11 @@ pub(crate) trait SealedPin: Sized {
     #[inline]
     fn set_as_alt(&self, alt_num: u8) {
         self.ioc_pad().func_ctl().modify(|w| w.set_alt_select(alt_num));
+    }
+
+    #[inline]
+    fn set_as_default(&self) {
+        self.ioc_pad().func_ctl().write(|w| w.0 = 0);
     }
 }
 
@@ -502,6 +536,46 @@ pub trait Pin: Peripheral<P = Self> + Into<AnyPin> + SealedPin + Sized + 'static
         AnyPin {
             pin_pad: self.pin_pad(),
         }
+    }
+
+    /// Set pin as IOC-controlled gpio, input, pulling down
+    #[allow(unused)]
+    fn set_as_ioc_gpio(&self) {
+        const PY: usize = 14; // power domain
+        const PZ: usize = 15; // battery domain
+
+        const PIOC_FUNC_CTL_SOC_IO: u8 = 3;
+        const BIOC_FUNC_CTL_SOC_IO: u8 = 3;
+        const IOC_FUNC_CTL_GPIO: u8 = 0;
+
+        if self._port() == PY {
+            pac::PIOC
+                .pad(self.pin_pad() as _)
+                .func_ctl()
+                .modify(|w| w.set_alt_select(PIOC_FUNC_CTL_SOC_IO));
+        } else {
+            #[cfg(peri_bioc)]
+            if self._port() == PZ {
+                pac::BIOC
+                    .pad(self.pin_pad() as _)
+                    .func_ctl()
+                    .modify(|w| w.set_alt_select(BIOC_FUNC_CTL_SOC_IO));
+            }
+        }
+
+        // input, inner pull down
+        self.gpio()
+            .oe(self._port())
+            .clear()
+            .modify(|w| w.set_direction(1 << self.pin()));
+        self.ioc_pad().pad_ctl().modify(|w| {
+            w.set_pe(true); // pull enable
+            w.set_ps(false);
+        });
+
+        self.ioc_pad()
+            .func_ctl()
+            .modify(|w| w.set_alt_select(IOC_FUNC_CTL_GPIO));
     }
 }
 
@@ -667,25 +741,6 @@ impl<'d> embedded_hal::digital::StatefulOutputPin for Flex<'d> {
     }
 }
 
-/// Use power domain PY as GPIO
-#[cfg(hpm53)]
-pub(crate) fn init_py_pins_as_gpio() {
-    // Set PY00-PY07 default function from PGPIO to GPIO0
-    const IOC_PYXX_FUNC_CTL_SOC_GPIO_Y_XX: u8 = 3;
-
-    for pin_pad in [
-        pac::pins::PY00,
-        pac::pins::PY01,
-        pac::pins::PY02,
-        pac::pins::PY03,
-        pac::pins::PY04,
-        pac::pins::PY05,
-        pac::pins::PY06,
-        pac::pins::PY07,
-    ] {
-        pac::PIOC
-            .pad(pin_pad)
-            .func_ctl()
-            .modify(|w| w.set_alt_select(IOC_PYXX_FUNC_CTL_SOC_GPIO_Y_XX));
-    }
+pub(crate) unsafe fn init(_cs: critical_section::CriticalSection) {
+    crate::_generated::init_gpio();
 }

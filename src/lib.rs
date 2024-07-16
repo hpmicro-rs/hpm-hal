@@ -55,6 +55,8 @@ pub mod usb;
 
 #[cfg(femc)]
 pub mod femc;
+#[cfg(rtc)]
+pub mod rtc;
 
 #[cfg(feature = "rt")]
 pub mod rt;
@@ -141,20 +143,22 @@ pub struct Config {
 }
 
 pub fn init(config: Config) -> Peripherals {
-    #[cfg(hpm53)]
-    gpio::init_py_pins_as_gpio();
-
-    // board_init_clock
     unsafe {
         sysctl::init(config.sysctl);
-    }
 
-    unsafe {
-        gpio::input_future::init_gpio0_irq();
+        critical_section::with(|cs| {
+            gpio::init(cs);
+            dma::init(cs);
+        });
     }
 
     #[cfg(feature = "embassy")]
-    embassy::init();
+    {
+        embassy::init();
+
+        #[cfg(feature = "defmt")]
+        defmt::timestamp!("{=u64:us}", embassy_time::Instant::now().as_micros());
+    }
 
     Peripherals::take()
 }

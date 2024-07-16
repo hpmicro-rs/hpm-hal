@@ -23,15 +23,10 @@ jobs:
           rustup default nightly-2024-06-12
           rustup component add rust-src
           rustup target add riscv32imafc-unknown-none-elf
-      - name: Fetch Deps
-        # if this is a pull request
-        # if: github.event_name == 'pull_request'
-        run: |
-          mkdir -p ../hpm-data/build/
-          cd ../hpm-data/build/
-          git clone https://github.com/hpmicro-rs/hpm-metapac.git
       - name: Build Only
-        run:
+        run: |
           for d in $(ls -1 ./examples); do
-            (cd ./examples/$d && cargo build --release)
+            if [ -f "./examples/$d/Cargo.toml" ]; then
+              (cd ./examples/$d && cargo build --release)
+            fi
           done

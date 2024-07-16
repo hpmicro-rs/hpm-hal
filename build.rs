@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::io::Write as _;
@@ -9,6 +9,100 @@ use std::{env, fs};
 use hpm_metapac::metadata::METADATA;
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
+
+// HPM_SOC_IP_FEATURE
+fn get_ip_features(chip_family: &str) -> &[&str] {
+    match chip_family {
+        "hpm67" | "hpm64" => &["ADC16_HAS_TEMPSNS"],
+        "hpm63" => &["PWM_COUNTER_RESET"],
+        "hpm62" => &[
+            "UART_RX_IDLE_DETECT",
+            "PWM_COUNTER_RESET",
+            "PWM_HRPWM",
+            // custom
+            "DMA_IDMISC",
+        ],
+        "hpm53" => &[
+            "GPTMR_MONITOR",
+            "GPTMR_OP_MODE",
+            "UART_RX_IDLE_DETECT",
+            "UART_FCRR",
+            "UART_RX_EN",
+            "UART_E00018_FIX",
+            "UART_9BIT_MODE",
+            "UART_ADDR_MATCH",
+            "UART_TRIG_MODE",
+            "UART_FINE_FIFO_THRLD",
+            "UART_IIR2",
+            "I2C_SUPPORT_RESET",
+            "SPI_NEW_TRANS_COUNT",
+            "SPI_CS_SELECT",
+            "SPI_SUPPORT_DIRECTIO",
+            "PWM_COUNTER_RESET",
+            "ADC16_HAS_MOT_EN",
+            // custom
+            "DMA_V2",
+            "I2C_TRANSFER_COUNT_MAX_4096",
+        ],
+        "hpm68" => &[
+            "UART_RX_IDLE_DETECT",
+            "UART_FCRR",
+            "UART_RX_EN",
+            "I2C_SUPPORT_RESET",
+            "SPI_NEW_TRANS_COUNT",
+            "SPI_CS_SELECT",
+            "SPI_SUPPORT_DIRECTIO",
+            "GPTMR_MONITOR",
+            "GPTMR_OP_MODE",
+            "DAO_DATA_FORMAT_CONFIG",
+            "CAM_INV_DEN",
+            // custom
+            "DMA_V2",
+            "I2C_TRANSFER_COUNT_MAX_4096",
+        ],
+        "hpm6e" => &[
+            "GPTMR_MONITOR",
+            "GPTMR_OP_MODE",
+            "GPTMR_CNT_MODE",
+            "UART_RX_IDLE_DETECT",
+            "UART_FCRR",
+            "UART_RX_EN",
+            "UART_E00018_FIX",
+            "UART_9BIT_MODE",
+            "UART_ADDR_MATCH",
+            "UART_TRIG_MODE",
+            "UART_FINE_FIFO_THRLD",
+            "UART_IIR2",
+            "I2C_SUPPORT_RESET",
+            "SPI_NEW_TRANS_COUNT",
+            "SPI_CS_SELECT",
+            "SPI_SUPPORT_DIRECTIO",
+            "DMAV2_BURST_IN_FIXED_TRANS",
+            "DMAV2_BYTE_ORDER_SWAP",
+            "ADC16_HAS_MOT_EN",
+            "DAO_DATA_FORMAT_CONFIG",
+            "QEIV2_ONESHOT_MODE",
+            "QEIV2_SW_RESTART_TRG",
+            "QEIV2_TIMESTAMP",
+            "QEIV2_ADC_THRESHOLD",
+            "RDC_IIR",
+            "SEI_RX_LATCH_FEATURE",
+            "SEI_ASYNCHRONOUS_MODE_V2",
+            "SEI_TIMEOUT_REWIND_FEATURE",
+            "SEI_HAVE_DAT10_31",
+            "SEI_HAVE_INTR64_255",
+            "SEI_HAVE_CTRL2_12",
+            "SEI_HAVE_PTCD",
+            "ENET_HAS_MII_MODE",
+            "FFA_FP32",
+            // custom
+            "DMA_V2",
+            "DMA_V2_SWAP_TABLE",
+            "I2C_TRANSFER_COUNT_MAX_4096",
+        ],
+        _ => panic!("Unknown chip family: {}", chip_family),
+    }
+}
 
 fn main() {
     let mut cfgs = CfgSet::new();
@@ -30,14 +124,20 @@ fn main() {
 
     // hpm53, hpm67, etc
     let family_name = chip_name[0..5].to_ascii_lowercase();
-    cfgs.enable(family_name);
+    cfgs.enable(&family_name);
+
+    // IP feature gates, usesage: #[cfg(ip_feature_adc16_has_tempsns)]
+    for feature in get_ip_features(&family_name) {
+        cfgs.enable(&format!("ip_feature_{}", feature.to_ascii_lowercase()));
+    }
 
     for p in METADATA.peripherals {
         if let Some(r) = &p.registers {
             cfgs.enable(r.kind);
             cfgs.enable(format!("{}_{}", r.kind, r.version));
 
-            // cfgs.enable(format!("peri_{}", p.name.to_ascii_lowercase()));
+            // name based: peri_uart10
+            cfgs.enable(format!("peri_{}", p.name.to_ascii_lowercase()));
         }
     }
 
@@ -114,16 +214,16 @@ fn main() {
         let pname = format_ident!("{}", p.name);
 
         if let Some(sysctl) = &p.sysctl {
-            if let Some(clock_idx) = sysctl.clock_node {
-                let resource_idx = sysctl.resource;
-                g.extend(quote! {
-                    impl crate::sysctl::SealedClockPeripheral for peripherals::#pname {
-                        const SYSCTL_CLOCK: usize = #clock_idx;
-                        const SYSCTL_RESOURCE: usize = #resource_idx;
-                    }
-                    impl crate::sysctl::ClockPeripheral for peripherals::#pname {}
-                });
-            }
+            //            if let Some(clock_idx) = sysctl.clock_node {
+            let resource_idx = sysctl.resource;
+            let clock_idx = sysctl.clock_node.unwrap_or(0xFFFFFFFF);
+            g.extend(quote! {
+                impl crate::sysctl::SealedClockPeripheral for peripherals::#pname {
+                    const SYSCTL_CLOCK: usize = #clock_idx;
+                    const SYSCTL_RESOURCE: usize = #resource_idx;
+                }
+                impl crate::sysctl::ClockPeripheral for peripherals::#pname {}
+            });
         }
     }
 
@@ -144,64 +244,11 @@ fn main() {
         (("spi", "CS1"), quote!(crate::spi::CsPin)),
         (("spi", "CS2"), quote!(crate::spi::CsPin)),
         (("spi", "CS3"), quote!(crate::spi::CsPin)),
+        (("spi", "CSN"), quote!(crate::spi::CsPin)),
         (("spi", "MOSI"), quote!(crate::spi::MosiPin)),
         (("spi", "MISO"), quote!(crate::spi::MisoPin)),
         (("spi", "DAT2"), quote!(crate::spi::D2Pin)),
         (("spi", "DAT3"), quote!(crate::spi::D3Pin)),
-    ]
-    .into();
-
-    for p in METADATA.peripherals {
-        if let Some(regs) = &p.registers {
-            for pin in p.pins {
-                let key = (regs.kind, pin.signal);
-                if let Some(tr) = signals.get(&key) {
-                    let peri = format_ident!("{}", p.name);
-
-                    let pin_name = format_ident!("{}", pin.pin);
-
-                    let alt = pin.alt.unwrap_or(0);
-
-                    g.extend(quote! {
-                        pin_trait_impl!(#tr, #peri, #pin_name, #alt);
-                    })
-                }
-
-                // Spi is special
-                if regs.kind == "spi" && pin.signal.starts_with("CS") {
-                    let peri = format_ident!("{}", p.name);
-                    let pin_name = format_ident!("{}", pin.pin);
-                    let alt = pin.alt.unwrap_or(0);
-                    let cs_index: u8 = match pin.signal {
-                        "CS0" => 1,
-                        "CS1" => 2,
-                        "CS2" => 4,
-                        "CS3" => 8,
-                        // CSN pin is available on hpm67 chips
-                        "CSN" => 0,
-                        _ => unreachable!("CS pin not found {:?}", pin.signal),
-                    };
-                    g.extend(quote! {
-                        spi_cs_pin_trait_impl!(crate::spi::CsIndexPin, #peri, #pin_name, #alt, #cs_index);
-                    });
-                }
-
-                // ADC is special
-                if regs.kind == "adc" {
-                    // TODO
-                }
-                // if regs.kind == "dac"
-            }
-        }
-    }
-
-    // ========
-    // Generate dma_trait_impl!
-    let signals: HashMap<_, _> = [
-        // (kind, signal) => trait
-        (("uart", "RX"), quote!(crate::uart::RxDma)),
-        (("uart", "TX"), quote!(crate::uart::TxDma)),
-        (("i2c", "GLOBAL"), quote!(crate::i2c::I2cDma)),
         // FEMC
         (("femc", "A00"), quote!(crate::femc::A00Pin)),
         (("femc", "A01"), quote!(crate::femc::A01Pin)),
@@ -265,6 +312,62 @@ fn main() {
 
     for p in METADATA.peripherals {
         if let Some(regs) = &p.registers {
+            for pin in p.pins {
+                let key = (regs.kind, pin.signal);
+                if let Some(tr) = signals.get(&key) {
+                    let peri = format_ident!("{}", p.name);
+
+                    let pin_name = format_ident!("{}", pin.pin);
+
+                    let alt = pin.alt.unwrap_or(0);
+
+                    g.extend(quote! {
+                        pin_trait_impl!(#tr, #peri, #pin_name, #alt);
+                    })
+                }
+
+                // Spi is special
+                if regs.kind == "spi" && pin.signal.starts_with("CS") {
+                    let peri = format_ident!("{}", p.name);
+                    let pin_name = format_ident!("{}", pin.pin);
+                    let alt = pin.alt.unwrap_or(0);
+                    let cs_index: u8 = match pin.signal {
+                        "CS0" => 1,
+                        "CS1" => 2,
+                        "CS2" => 4,
+                        "CS3" => 8,
+                        // CSN pin is available on hpm67 chips
+                        "CSN" => 0,
+                        _ => unreachable!("CS pin not found {:?}", pin.signal),
+                    };
+                    g.extend(quote! {
+                        spi_cs_pin_trait_impl!(crate::spi::CsIndexPin, #peri, #pin_name, #alt, #cs_index);
+                    });
+                }
+
+                // ADC is special
+                if regs.kind == "adc" {
+                    // TODO
+                }
+                // if regs.kind == "dac"
+            }
+        }
+    }
+
+    // ========
+    // Generate dma_trait_impl!
+    let signals: HashMap<_, _> = [
+        // (kind, signal) => trait
+        (("uart", "RX"), quote!(crate::uart::RxDma)),
+        (("uart", "TX"), quote!(crate::uart::TxDma)),
+        (("i2c", "GLOBAL"), quote!(crate::i2c::I2cDma)),
+        (("spi", "RX"), quote!(crate::spi::RxDma)),
+        (("spi", "TX"), quote!(crate::spi::TxDma)),
+    ]
+    .into();
+
+    for p in METADATA.peripherals {
+        if let Some(regs) = &p.registers {
             let mut dupe = HashSet::new();
             for ch in p.dma_channels {
                 if let Some(tr) = signals.get(&(regs.kind, ch.signal)) {
@@ -301,10 +404,11 @@ fn main() {
     let mut dmas = TokenStream::new();
     for ch in METADATA.dma_channels.iter() {
         let name = format_ident!("{}", ch.name);
-        let idx = ch.channel as u8;
 
         let ch_num = ch.channel as usize;
         let mux_num = ch.dmamux_channel as usize;
+
+        let idx = ch.dmamux_channel as u8; // index in DMAMUX and Channel Info
 
         // HDMA or XDMA
         let dma_name = format_ident!("{}", ch.name.split_once('_').expect("DMA channel name format").0);
@@ -319,6 +423,41 @@ fn main() {
             },
         });
     }
+
+    // ========
+    // Generate DMA IRQs.
+    let mut dma_irqs: BTreeMap<&str, &str> = BTreeMap::new();
+
+    for p in METADATA.peripherals {
+        if let Some(r) = &p.registers {
+            if r.kind == "dma" {
+                for irq in p.interrupts {
+                    // only 1 global DMA interrupt per controller
+                    assert_eq!(irq.signal, "GLOBAL");
+                    dma_irqs.insert(irq.interrupt, p.name);
+                }
+            }
+        }
+    }
+
+    let dma_irqs: TokenStream = dma_irqs
+        .iter()
+        .map(|(irq, peri_name)| {
+            let irq = format_ident!("{}", irq);
+            let peri_name = format_ident!("{}", peri_name);
+
+            quote! {
+                #[cfg(feature = "rt")]
+                #[allow(non_snake_case)]
+                #[no_mangle]
+                unsafe extern "riscv-interrupt-m" fn #irq() {
+                    <crate::peripherals::#peri_name as crate::dma::ControllerInterrupt>::on_irq();
+                }
+            }
+        })
+        .collect();
+
+    g.extend(dma_irqs);
 
     g.extend(quote! {
         pub(crate) const DMA_CHANNELS: &[crate::dma::ChannelInfo] = &[#dmas];
@@ -343,6 +482,43 @@ fn main() {
         let row = vec![regs.kind.to_string(), p.name.to_string()];
         peripherals_table.push(row);
     }
+
+    // GPIO irq and init_gpio
+    let mut gg = TokenStream::new();
+    for i in METADATA.interrupts {
+        // GPIO1_ is the same as GPIO0_
+        if i.name.starts_with("GPIO0_") {
+            let irq_name = i.name;
+            let gpio_port = format!("P{}", i.name.strip_prefix("GPIO0_").unwrap());
+            let irq_ident = format_ident!("{}", irq_name);
+
+            let port_offset = match METADATA.pins.iter().find(|p| p.name.starts_with(&gpio_port)) {
+                Some(any_pin) => (any_pin.index >> 5) as usize,
+                _ => continue, // GPIO irq without any pins
+            };
+
+            g.extend(quote! {
+                #[no_mangle]
+                #[link_section = ".fast"]
+                unsafe extern "riscv-interrupt-m" fn #irq_ident() {
+                    use crate::interrupt::InterruptExt;
+                    crate::gpio::input_future::on_interrupt(crate::pac::GPIO0, #port_offset);
+
+                    core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+                    crate::interrupt::#irq_ident.complete();
+                }
+            });
+            gg.extend(quote! {
+                crate::interrupt::#irq_ident.enable();
+            })
+        }
+    }
+    g.extend(quote! {
+        pub(crate) unsafe fn init_gpio() {
+            use crate::interrupt::InterruptExt;
+            #gg
+        }
+    });
 
     /*
     for irq in METADATA.interrupts {
