@@ -52,6 +52,7 @@ pub mod i2c;
 pub mod mbx;
 pub mod spi;
 pub mod uart;
+pub mod usb;
 
 #[cfg(femc)]
 pub mod femc;
