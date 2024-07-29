@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 # hpm5301 is a subset of hpm5361, either is ok if you have the 5301 board.
-hpm-hal = { path = "../..", features = ["rt", "embassy", "hpm5361"] }
+hpm-hal = { path = "../..", features = ["rt", "embassy", "hpm5361", "usb-pin-reuse-hpm5300"] }
 
 panic-halt = "0.2.0"
 riscv-rt = "0.12.2"
@@ -28,7 +28,7 @@ tinygif = "0.0.4"
 heapless = "0.8.0"
 micromath = "2.1.0"
 embedded-hal-bus = "0.2.0"
-
+embassy-usb = { version = "0.2.0", features = ["defmt", "max-handler-count-8", "max-interface-count-8"]}
 
 [profile.release]
 strip = false   # symbols are not flashed to the microcontroller, so don't strip them.
