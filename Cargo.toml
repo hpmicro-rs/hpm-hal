@@ -21,14 +21,16 @@ andes-riscv = { version = "0.1.1" }
 riscv = { version = "0.11", features = ["critical-section-single-hart"] }
 
 embedded-hal = { version = "1.0.0" }
-embassy-time-driver = { version = "0.1.0", features = [
+embassy-time-driver = { version = "0.2.0", features = [
     "tick-hz-1_000_000",
 ], optional = true }
+embassy-time-queue-utils = { version = "0.1.0", optional = true }
 embassy-sync = { version = "0.6.1" }
 embassy-futures = { version = "0.1.1" }
 embassy-hal-internal = { version = "0.2.0", default-features = false }
-embassy-time = { version = "0.3.2", optional = true }
+embassy-time = { version = "0.4.0", optional = true }
 embassy-usb-driver = { version = "0.1.0" }
+portable-atomic = { version = "1.0.0", default-features = false }
 critical-section = "1.1.3"
 
 static_assertions = "1"
@@ -61,7 +63,7 @@ default = ["rt", "embassy", "time"]
 rt = ["dep:hpm-riscv-rt", "hpm-metapac/rt"]
 defmt = ["dep:defmt", "embassy-usb-driver/defmt"]
 time = ["dep:embassy-time"]
-embassy = ["dep:embassy-time-driver"]
+embassy = ["dep:embassy-time-driver", "dep:embassy-time-queue-utils"]
 usb-pin-reuse-hpm5300 = []
 
 mcan = ["dep:mcan"]
