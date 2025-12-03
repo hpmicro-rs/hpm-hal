@@ -1,7 +1,5 @@
 //! XPI Flash memory (XPI Nor API)
 
-use core::marker::PhantomData;
-
 use embassy_hal_internal::{Peri, PeripheralType};
 use embedded_storage::nor_flash::NorFlashErrorKind;
 use romapi::{
@@ -82,14 +80,14 @@ impl Config {
 // - MARK: Flash driver
 
 /// Flash driver.
-pub struct Flash<'d, T: Instance, const FLASH_SIZE: usize> {
-    phantom: PhantomData<&'d mut T>,
+pub struct Flash<'d, T: Instance + PeripheralType, const FLASH_SIZE: usize> {
+    _peri: Peri<'d, T>,
     sector_size: u32,
     nor_config: xpi_nor_config_t,
 }
 
-impl<'d, T: Instance, const FLASH_SIZE: usize> Flash<'d, T, FLASH_SIZE> {
-    pub fn new(_periph: impl PeripheralType, config: Config) -> Result<Self, Error> {
+impl<'d, T: Instance + PeripheralType, const FLASH_SIZE: usize> Flash<'d, T, FLASH_SIZE> {
+    pub fn new(peri: Peri<'d, T>, config: Config) -> Result<Self, Error> {
         let option: xpi_nor_config_option_t = xpi_nor_config_option_t {
             header: config.header,
             option0: config.option0,
@@ -110,7 +108,7 @@ impl<'d, T: Instance, const FLASH_SIZE: usize> Flash<'d, T, FLASH_SIZE> {
         }
 
         Ok(Self {
-            phantom: PhantomData,
+            _peri: peri,
             sector_size,
             nor_config,
         })
@@ -262,11 +260,15 @@ impl embedded_storage::nor_flash::NorFlashError for Error {
     }
 }
 
-impl<'d, T: Instance, const FLASH_SIZE: usize> embedded_storage::nor_flash::ErrorType for Flash<'d, T, FLASH_SIZE> {
+impl<'d, T: Instance + PeripheralType, const FLASH_SIZE: usize> embedded_storage::nor_flash::ErrorType
+    for Flash<'d, T, FLASH_SIZE>
+{
     type Error = Error;
 }
 
-impl<'d, T: Instance, const FLASH_SIZE: usize> embedded_storage::nor_flash::ReadNorFlash for Flash<'d, T, FLASH_SIZE> {
+impl<'d, T: Instance + PeripheralType, const FLASH_SIZE: usize> embedded_storage::nor_flash::ReadNorFlash
+    for Flash<'d, T, FLASH_SIZE>
+{
     const READ_SIZE: usize = READ_SIZE;
 
     fn read(&mut self, offset: u32, bytes: &mut [u8]) -> Result<(), Self::Error> {
@@ -278,7 +280,9 @@ impl<'d, T: Instance, const FLASH_SIZE: usize> embedded_storage::nor_flash::Read
     }
 }
 
-impl<'d, T: Instance, const FLASH_SIZE: usize> embedded_storage::nor_flash::NorFlash for Flash<'d, T, FLASH_SIZE> {
+impl<'d, T: Instance + PeripheralType, const FLASH_SIZE: usize> embedded_storage::nor_flash::NorFlash
+    for Flash<'d, T, FLASH_SIZE>
+{
     const WRITE_SIZE: usize = WRITE_SIZE;
 
     const ERASE_SIZE: usize = ERASE_SIZE;

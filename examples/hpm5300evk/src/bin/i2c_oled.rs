@@ -7,8 +7,8 @@ use embedded_graphics::mono_font::MonoTextStyle;
 use embedded_graphics::pixelcolor::BinaryColor;
 use embedded_graphics::prelude::*;
 use embedded_graphics::text::{Alignment, Text};
+use core::fmt::Write;
 use embedded_hal::delay::DelayNs;
-use embedded_io::Write as _; // `writeln!` provider
 use hal::gpio::{Level, Output, Speed};
 use hal::i2c::I2c;
 use hal::mode::Blocking;

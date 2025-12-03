@@ -4,9 +4,9 @@
 #![feature(type_alias_impl_trait)]
 #![feature(impl_trait_in_assoc_type)]
 
+use core::fmt::Write;
 use defmt::println;
 use embassy_time::Timer;
-use embedded_io::Write as _;
 use hal::pac;
 use hpm_hal::gpio::Output;
 use hpm_hal::interrupt::InterruptExt;

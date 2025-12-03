@@ -11,8 +11,10 @@ use defmt::println;
 use embassy_executor::Spawner;
 use embassy_sync::waitqueue::AtomicWaker;
 use embassy_time::Timer;
-use hal::gpio::{AnyPin, Flex, Pin};
+use hal::adc::AdcChannel;
+use hal::gpio::{AnyPin, Flex};
 use hal::pac;
+use hal::Peri;
 use hpm_hal::interrupt::InterruptExt;
 use hpm_hal::peripherals;
 use {defmt_rtt as _, hpm_hal as hal};
@@ -59,11 +61,14 @@ impl Button {
 
 pub struct AdcButton {
     adc: hal::adc::Adc<'static, peripherals::ADC0>,
-    pin: peripherals::PB15,
+    channel: hal::adc::AnyAdcChannel<peripherals::ADC0>,
 }
 
 impl AdcButton {
-    pub fn new(periph: peripherals::ADC0, pin: peripherals::PB15) -> Self {
+    pub fn new(
+        periph: hal::Peri<'static, peripherals::ADC0>,
+        pin: hal::Peri<'static, peripherals::PB15>,
+    ) -> Self {
         let mut adc_config = hal::adc::Config::default();
         adc_config.clock_divider = hal::adc::ClockDivider::DIV4;
         let adc = hal::adc::Adc::new(periph, adc_config);
@@ -71,8 +76,9 @@ impl AdcButton {
         let mut periodic_config = hal::adc::PeriodicConfig::default();
         periodic_config.prescale = 10;
 
-        let mut this = Self { adc, pin };
-        this.adc.configure_periodic(&mut this.pin, periodic_config);
+        let mut channel = pin.degrade_adc();
+        let mut this = Self { adc, channel };
+        this.adc.configure_periodic(&mut this.channel, periodic_config);
 
         // BUG: uninited periodic reading is always 0, and no way to know if it's ready
         while this.read_raw() == 0 {}
@@ -85,11 +91,11 @@ impl AdcButton {
     }
 
     pub fn read_raw(&mut self) -> u16 {
-        self.adc.periodic_read(&mut self.pin)
+        self.adc.periodic_read(&mut self.channel)
     }
 
     pub fn read(&mut self) -> Option<Button> {
-        let val = self.adc.periodic_read(&mut self.pin);
+        let val = self.adc.periodic_read(&mut self.channel);
         Button::from_adc_value(val)
     }
 
@@ -101,7 +107,7 @@ impl AdcButton {
         let mut period_config = hal::adc::PeriodicConfig::default();
         period_config.high_threshold = Some(50000); // released
         period_config.prescale = 10;
-        self.adc.configure_periodic(&mut self.pin, period_config);
+        self.adc.configure_periodic(&mut self.channel, period_config);
 
         let r = pac::ADC0;
 
@@ -130,7 +136,7 @@ impl AdcButton {
         period_config.low_threshold = Some(32768); // anything pressed
         period_config.prescale = 10;
 
-        self.adc.configure_periodic(&mut self.pin, period_config);
+        self.adc.configure_periodic(&mut self.channel, period_config);
 
         let r = pac::ADC0;
 
@@ -177,8 +183,8 @@ async fn main(spawner: Spawner) -> ! {
     println!("ahb:\t{}Hz", hal::sysctl::clocks().ahb.0);
     println!("==============================");
 
-    spawner.spawn(blink(p.PA23.degrade())).unwrap();
-    spawner.spawn(blink(p.PA10.degrade())).unwrap();
+    spawner.spawn(blink(p.PA23.into())).unwrap();
+    spawner.spawn(blink(p.PA10.into())).unwrap();
 
     println!("begin init adc");
 
@@ -203,7 +209,7 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 }
 
 #[embassy_executor::task(pool_size = 2)]
-async fn blink(pin: AnyPin) {
+async fn blink(pin: Peri<'static, AnyPin>) {
     let mut led = Flex::new(pin);
     led.set_as_output(Default::default());
     led.set_high();

@@ -7,7 +7,7 @@ use core::future;
 use core::marker::PhantomData;
 use core::task::Poll;
 
-use embassy_hal_internal::{Peri, PeripheralType};
+use embassy_hal_internal::Peri;
 use embassy_sync::waitqueue::AtomicWaker;
 use futures_util::stream;
 

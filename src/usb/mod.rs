@@ -4,7 +4,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use bus::Bus;
 use control_pipe::ControlPipe;
 #[cfg(feature = "usb-pin-reuse-hpm5300")]
-use embassy_hal_internal::{Peri, PeripheralType};
+use embassy_hal_internal::Peri;
 use embassy_sync::waitqueue::AtomicWaker;
 use embassy_usb_driver::{Direction, Driver, EndpointAddress, EndpointAllocError, EndpointInfo, EndpointType};
 use embedded_hal::delay::DelayNs;
@@ -225,6 +225,7 @@ pub struct UsbDriver<'d, T: Instance> {
 impl<'d, T: Instance> UsbDriver<'d, T> {
     pub fn new(
         _peri: Peri<'d, T>,
+        _irq: impl crate::interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'd,
         #[cfg(feature = "usb-pin-reuse-hpm5300")] dm: Peri<'d, impl DmPin<T>>,
         #[cfg(feature = "usb-pin-reuse-hpm5300")] dp: Peri<'d, impl DpPin<T>>,
     ) -> Self {
@@ -314,12 +315,22 @@ impl<'a, T: Instance> Driver<'a> for UsbDriver<'a, T> {
     fn alloc_endpoint_out(
         &mut self,
         ep_type: EndpointType,
+        ep_addr: Option<EndpointAddress>,
         max_packet_size: u16,
         interval_ms: u8,
     ) -> Result<Self::EndpointOut, EndpointAllocError> {
-        let ep_idx = self
-            .find_free_endpoint(ep_type, Direction::Out)
-            .ok_or(EndpointAllocError)?;
+        let ep_idx = if let Some(addr) = ep_addr {
+            // Use specified endpoint address
+            let idx = addr.index();
+            if idx >= self.endpoints_out.len() || self.endpoints_out[idx].used {
+                return Err(EndpointAllocError);
+            }
+            idx
+        } else {
+            // Find any free endpoint
+            self.find_free_endpoint(ep_type, Direction::Out)
+                .ok_or(EndpointAllocError)?
+        };
 
         let ep = EndpointInfo {
             addr: EndpointAddress::from_parts(ep_idx, Direction::Out),
@@ -348,12 +359,22 @@ impl<'a, T: Instance> Driver<'a> for UsbDriver<'a, T> {
     fn alloc_endpoint_in(
         &mut self,
         ep_type: EndpointType,
+        ep_addr: Option<EndpointAddress>,
         max_packet_size: u16,
         interval_ms: u8,
     ) -> Result<Self::EndpointIn, EndpointAllocError> {
-        let ep_idx = self
-            .find_free_endpoint(ep_type, Direction::In)
-            .ok_or(EndpointAllocError)?;
+        let ep_idx = if let Some(addr) = ep_addr {
+            // Use specified endpoint address
+            let idx = addr.index();
+            if idx >= self.endpoints_in.len() || self.endpoints_in[idx].used {
+                return Err(EndpointAllocError);
+            }
+            idx
+        } else {
+            // Find any free endpoint
+            self.find_free_endpoint(ep_type, Direction::In)
+                .ok_or(EndpointAllocError)?
+        };
 
         let ep = EndpointInfo {
             addr: EndpointAddress::from_parts(ep_idx, Direction::In),
@@ -380,10 +401,10 @@ impl<'a, T: Instance> Driver<'a> for UsbDriver<'a, T> {
     fn start(mut self, control_max_packet_size: u16) -> (Self::Bus, Self::ControlPipe) {
         // Set control endpoint first
         let ep_out = self
-            .alloc_endpoint_out(EndpointType::Control, control_max_packet_size, 0)
+            .alloc_endpoint_out(EndpointType::Control, None, control_max_packet_size, 0)
             .unwrap();
         let ep_in = self
-            .alloc_endpoint_in(EndpointType::Control, control_max_packet_size, 0)
+            .alloc_endpoint_in(EndpointType::Control, None, control_max_packet_size, 0)
             .unwrap();
         assert_eq!(ep_out.info.addr.index(), 0);
         assert_eq!(ep_in.info.addr.index(), 0);

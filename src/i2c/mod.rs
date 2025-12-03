@@ -4,8 +4,8 @@ use core::future::Future;
 use core::marker::PhantomData;
 use core::task::Poll;
 
+use embassy_hal_internal::Peri;
 use embassy_hal_internal::drop::OnDrop;
-use embassy_hal_internal::{Peri, PeripheralType};
 use embassy_sync::waitqueue::AtomicWaker;
 use embedded_hal::i2c::Operation;
 use futures_util::future::poll_fn;

@@ -177,6 +177,23 @@ pub enum Error {
     LineBreak,
 }
 
+impl core::fmt::Display for Error {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let message = match self {
+            Self::Framing => "Framing Error",
+            Self::Overrun => "RX Buffer Overrun",
+            Self::Parity => "Parity Check Error",
+            Self::BufferTooLong => "Buffer too large for DMA",
+            Self::FIFO => "FIFO Error",
+            Self::Timeout => "Timeout Error",
+            Self::LineBreak => "Line Break Error",
+        };
+        write!(f, "{}", message)
+    }
+}
+
+impl core::error::Error for Error {}
+
 enum ReadCompletionEvent {
     // DMA Read transfer completed first
     DmaCompleted,
@@ -1347,6 +1364,13 @@ impl<M: Mode> embedded_io::Write for UartTx<'_, M> {
     }
 }
 
+impl<M: Mode> core::fmt::Write for UartTx<'_, M> {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        self.blocking_write(s.as_bytes()).map_err(|_| core::fmt::Error)?;
+        Ok(())
+    }
+}
+
 impl<M: Mode> embedded_io::ErrorType for Uart<'_, M> {
     type Error = Error;
 }
@@ -1358,6 +1382,13 @@ impl<M: Mode> embedded_io::Write for Uart<'_, M> {
 
     fn flush(&mut self) -> Result<(), Self::Error> {
         self.blocking_flush()
+    }
+}
+
+impl<M: Mode> core::fmt::Write for Uart<'_, M> {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        self.blocking_write(s.as_bytes()).map_err(|_| core::fmt::Error)?;
+        Ok(())
     }
 }
 

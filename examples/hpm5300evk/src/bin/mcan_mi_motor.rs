@@ -14,7 +14,7 @@ use core::task::Poll;
 
 use embassy_executor::Spawner;
 use embassy_sync::waitqueue::AtomicWaker;
-use embedded_io::Write as _;
+use core::fmt::Write;
 use hal::gpio::{Level, Output};
 use hal::interrupt::InterruptExt;
 use hal::mcan::Dependencies;
@@ -22,7 +22,6 @@ use hal::mode::Blocking;
 use hal::{pac, peripherals};
 use hpm_hal::gpio::{Input, Pin, Pull};
 use hpm_hal::mcan::{RxPin, TxPin};
-use hpm_hal::Peripheral;
 use mcan::bus::CanConfigurable;
 use {defmt_rtt as _, hpm_hal as hal};
 
@@ -152,9 +151,9 @@ pub struct CyberGearMotor {
 
 impl CyberGearMotor {
     pub fn new(
-        can: impl Peripheral<P = CanPeripheral> + 'static,
-        rx: impl Peripheral<P = impl RxPin<CanPeripheral>> + 'static,
-        tx: impl Peripheral<P = impl TxPin<CanPeripheral>> + 'static,
+        can: hal::Peri<'static, CanPeripheral>,
+        rx: hal::Peri<'static, impl RxPin<CanPeripheral>>,
+        tx: hal::Peri<'static, impl TxPin<CanPeripheral>>,
     ) -> Self {
         let dependencies = hal::mcan::Dependencies::new(can, rx, tx);
 

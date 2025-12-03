@@ -2,8 +2,8 @@
 #![no_main]
 #![no_std]
 
+use core::fmt::Write;
 use embedded_hal::delay::DelayNs;
-use embedded_io::Write as _; // `writeln!` provider
 use hal::gpio::{Level, Output, Speed};
 use hal::pac;
 use hpm_hal::time::Hertz;
