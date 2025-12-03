@@ -134,6 +134,7 @@ macro_rules! bind_interrupts {
 
         $(
             #[$crate::external_interrupt($crate::pac::interrupt::$irq)]
+            #[allow(non_snake_case)]
             unsafe fn $irq() {
                 use $crate::interrupt::InterruptExt;
 
