@@ -1,4 +1,5 @@
 #![no_std]
+#![feature(abi_riscv_interrupt)]
 #![allow(unexpected_cfgs, static_mut_refs, unsafe_op_in_unsafe_fn)]
 
 #[doc(hidden)]
