@@ -16,15 +16,17 @@
 mod buffered;
 pub use buffered::*;
 
+mod ringbuffered;
 use core::future::poll_fn;
 use core::marker::PhantomData;
-use core::sync::atomic::{AtomicU8, AtomicU32, Ordering, compiler_fence};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering, compiler_fence};
 use core::task::Poll;
 
 use embassy_hal_internal::drop::OnDrop;
 use embassy_hal_internal::{Peri, PeripheralType};
 use embassy_sync::waitqueue::AtomicWaker;
 use futures_util::future::{Either, select};
+pub use ringbuffered::*;
 
 use crate::dma::ChannelAndRequest;
 use crate::gpio::{AnyPin, SealedPin};
@@ -221,8 +223,16 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
 
 unsafe fn on_interrupt(r: pac::uart::Uart, s: &'static State) {
     let lsr = r.lsr().read();
+    let ring_buffered = s.ring_buffered_mode.load(Ordering::Relaxed);
 
-    let has_errors = lsr.pe() || lsr.fe() || lsr.oe() || lsr.errf() || lsr.lbreak();
+    // In ring buffered mode, ignore Overrun Error (OE) since DMA handles data.
+    // OE can be falsely triggered when both DMA and CPU access UART.
+    let has_errors = if ring_buffered {
+        lsr.pe() || lsr.fe() || lsr.errf() || lsr.lbreak() // Exclude OE
+    } else {
+        lsr.pe() || lsr.fe() || lsr.oe() || lsr.errf() || lsr.lbreak()
+    };
+
     // clear flags and disable interrupts
     if has_errors {
         r.ier().modify(|w| {
@@ -248,9 +258,11 @@ unsafe fn on_interrupt(r: pac::uart::Uart, s: &'static State) {
             let iir = r.iir2().read();
 
             if iir.rxidle_flag() && r.idle_cfg().read().rx_idle_en() {
-                r.ier().modify(|w| w.set_etxidle(false));
-                r.idle_cfg().modify(|w| w.set_rx_idle_en(false)); // disable idle line detection
-
+                // Only disable IDLE detection if NOT in ring buffered mode
+                if !ring_buffered {
+                    r.ier().modify(|w| w.set_etxidle(false));
+                    r.idle_cfg().modify(|w| w.set_rx_idle_en(false));
+                }
                 r.iir2().modify(|w| w.set_rxidle_flag(true)); // W1C
             }
         }
@@ -261,7 +273,10 @@ unsafe fn on_interrupt(r: pac::uart::Uart, s: &'static State) {
             ip_feature_uart_9bit_mode
         ))]
         if r.ier().read().erxidle() && lsr.rxidle() {
-            r.ier().modify(|w| w.set_etxidle(false)); // disable idle line detection
+            // Only disable IDLE detection if NOT in ring buffered mode
+            if !ring_buffered {
+                r.ier().modify(|w| w.set_etxidle(false));
+            }
         }
     }
 
@@ -353,15 +368,23 @@ impl<'d> UartTx<'d, Async> {
             embassy_futures::yield_now().await;
         }
 
-        #[cfg(ip_feature_uart_fine_fifo_thrld)]
-        r.fcrr().modify(|w| {
-            w.set_dmae(false);
-        });
-        #[cfg(not(ip_feature_uart_fine_fifo_thrld))]
+        // Only disable DMA if not in ring_buffered RX mode
+        // In ring_buffered mode, RX DMA needs DMAE to stay enabled
+        if !self
+            .state
+            .ring_buffered_mode
+            .load(core::sync::atomic::Ordering::Relaxed)
         {
-            let mut fcr = pac::uart::regs::Fcr(r.gpr().read().data() as _);
-            fcr.set_dmae(false);
-            r.fcr().write_value(fcr);
+            #[cfg(ip_feature_uart_fine_fifo_thrld)]
+            r.fcrr().modify(|w| {
+                w.set_dmae(false);
+            });
+            #[cfg(not(ip_feature_uart_fine_fifo_thrld))]
+            {
+                let mut fcr = pac::uart::regs::Fcr(r.gpr().read().data() as _);
+                fcr.set_dmae(false);
+                r.fcr().write_value(fcr);
+            }
         }
 
         Ok(())
@@ -1437,6 +1460,8 @@ struct State {
     rx_waker: AtomicWaker,
     tx_rx_refcount: AtomicU8,
     saved_lsr: AtomicU32,
+    /// When true, IDLE detection is not disabled after first trigger (for ring buffered mode)
+    ring_buffered_mode: AtomicBool,
 }
 impl State {
     const fn new() -> Self {
@@ -1444,6 +1469,7 @@ impl State {
             rx_waker: AtomicWaker::new(),
             tx_rx_refcount: AtomicU8::new(0),
             saved_lsr: AtomicU32::new(0),
+            ring_buffered_mode: AtomicBool::new(false),
         }
     }
 }

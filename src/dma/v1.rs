@@ -167,6 +167,13 @@ unsafe fn dma_on_irq(r: pac::dma::Dma, mux_num_base: u32) {
         r.int_status().write(|w| w.0 = abort << 8); // W1C
     }
 
+    // Increment complete_count for each channel that completed a transfer
+    // This is used by ring buffer to track DMA position
+    for i in BitIter(tc) {
+        let id = (i + mux_num_base) as usize;
+        STATE[id].complete_count.fetch_add(1, Ordering::Release);
+    }
+
     for i in BitIter(tc | abort) {
         let id = (i + mux_num_base) as usize;
         STATE[id].waker.wake();

@@ -77,7 +77,7 @@ pub mod rng;
 pub mod trgm;
 
 #[cfg(feature = "rt")]
-pub use hpm_riscv_rt::{entry, pre_init, fast, external_interrupt};
+pub use hpm_riscv_rt::{entry, external_interrupt, fast, pre_init};
 
 #[cfg(feature = "embassy")]
 pub mod embassy;

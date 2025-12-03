@@ -11,6 +11,8 @@
 #![macro_use]
 
 mod dmamux;
+pub mod ringbuffer;
+
 use embassy_hal_internal::{PeripheralType, impl_peripheral};
 
 #[cfg(ip_feature_dma_v2)]

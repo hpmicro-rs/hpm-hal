@@ -181,6 +181,13 @@ unsafe fn dma_on_irq(r: pac::dma::Dma, mux_num_base: u32) {
         r.intabortsts().write(|w| w.0 = abort); // W1C
     }
 
+    // Increment complete_count for each channel that completed a transfer
+    // This is used by ring buffer to track DMA position
+    for i in BitIter(tc) {
+        let id = (i + mux_num_base) as usize;
+        STATE[id].complete_count.fetch_add(1, Ordering::Release);
+    }
+
     for i in BitIter(half | tc | abort) {
         let id = (i + mux_num_base) as usize;
         STATE[id].waker.wake();
@@ -576,11 +583,145 @@ impl<'a> Future for Transfer<'a> {
         let info = self.channel.info();
         let r = info.dma.regs();
         let num = info.num;
-        let ch_cr = r.chctrl(num);
-        if running {
-            Poll::Pending
-        } else {
-            Poll::Ready(())
+        let _ch_cr = r.chctrl(num);
+        if running { Poll::Pending } else { Poll::Ready(()) }
+    }
+}
+
+// ============================================================================
+// Ring Buffer Support
+// ============================================================================
+
+use core::task::Waker;
+
+use super::ringbuffer::{DmaCtrl, Error, ReadableDmaRingBuffer};
+
+struct DmaCtrlImpl<'a>(Peri<'a, AnyChannel>);
+
+impl DmaCtrl for DmaCtrlImpl<'_> {
+    fn get_remaining_transfers(&self) -> usize {
+        self.0.get_remaining_transfers() as usize
+    }
+
+    fn reset_complete_count(&mut self) -> usize {
+        let state = &STATE[self.0.id as usize];
+        state.complete_count.swap(0, Ordering::AcqRel)
+    }
+
+    fn set_waker(&mut self, waker: &Waker) {
+        STATE[self.0.id as usize].waker.register(waker);
+    }
+}
+
+/// Ring buffer for receiving data using DMA circular mode
+pub struct ReadableRingBuffer<'a, W: Word> {
+    channel: Peri<'a, AnyChannel>,
+    ringbuf: ReadableDmaRingBuffer<'a, W>,
+}
+
+impl<'a, W: Word> ReadableRingBuffer<'a, W> {
+    /// Create a new readable ring buffer
+    ///
+    /// # Safety
+    /// The caller must ensure the buffer and peripheral address remain valid
+    pub unsafe fn new(
+        channel: Peri<'a, impl Channel>,
+        request: Request,
+        peri_addr: *mut W,
+        buffer: &'a mut [W],
+        options: TransferOptions,
+    ) -> Self {
+        let channel: Peri<'a, AnyChannel> = channel.into();
+
+        let buffer_ptr = buffer.as_mut_ptr();
+        let len = buffer.len();
+        let data_size = W::size();
+
+        // Force circular mode and interrupts for ring buffer operation
+        let mut opts = options;
+        opts.circular = true;
+        opts.half_transfer_irq = true;
+        opts.complete_transfer_irq = true;
+
+        channel.configure(
+            request,
+            Dir::PeripheralTypeToMemory,
+            peri_addr as *const u32,
+            data_size,
+            AddrCtrl::FIXED,
+            buffer_ptr as *mut u32,
+            data_size,
+            AddrCtrl::INCREMENT,
+            len,
+            HandshakeMode::Source,
+            opts,
+        );
+
+        Self {
+            channel,
+            ringbuf: ReadableDmaRingBuffer::new(buffer),
         }
+    }
+
+    /// Start the ring buffer operation
+    pub fn start(&mut self) {
+        self.channel.start();
+    }
+
+    /// Clear all data in the ring buffer
+    pub fn clear(&mut self) {
+        self.ringbuf.reset(&mut DmaCtrlImpl(self.channel.reborrow()));
+    }
+
+    /// Read elements from the ring buffer
+    ///
+    /// Returns (bytes_read, bytes_remaining)
+    pub fn read(&mut self, buf: &mut [W]) -> Result<(usize, usize), Error> {
+        self.ringbuf.read(&mut DmaCtrlImpl(self.channel.reborrow()), buf)
+    }
+
+    /// Read an exact number of elements (async)
+    pub async fn read_exact(&mut self, buffer: &mut [W]) -> Result<usize, Error> {
+        self.ringbuf
+            .read_exact(&mut DmaCtrlImpl(self.channel.reborrow()), buffer)
+            .await
+    }
+
+    /// Get the current readable length
+    pub fn len(&mut self) -> Result<usize, Error> {
+        self.ringbuf.len(&mut DmaCtrlImpl(self.channel.reborrow()))
+    }
+
+    /// Get the buffer capacity
+    pub const fn capacity(&self) -> usize {
+        self.ringbuf.cap()
+    }
+
+    /// Set a waker for async notifications
+    pub fn set_waker(&mut self, waker: &Waker) {
+        DmaCtrlImpl(self.channel.reborrow()).set_waker(waker);
+    }
+
+    /// Request pause (keeps configuration)
+    pub fn request_pause(&mut self) {
+        self.channel.abort();
+    }
+
+    /// Check if DMA is still running
+    pub fn is_running(&self) -> bool {
+        self.channel.is_running()
+    }
+
+    /// Get remaining DMA transfers (for debugging)
+    pub fn get_remaining_transfers(&self) -> u32 {
+        self.channel.get_remaining_transfers()
+    }
+}
+
+impl<W: Word> Drop for ReadableRingBuffer<'_, W> {
+    fn drop(&mut self) {
+        self.request_pause();
+        while self.is_running() {}
+        fence(Ordering::SeqCst);
     }
 }

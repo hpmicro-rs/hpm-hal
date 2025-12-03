@@ -20,11 +20,7 @@ pub struct Qei<'d, T: Instance + PeripheralType> {
 
 impl<'d, T: Instance + PeripheralType> Qei<'d, T> {
     /// Create a new QEI driver with only A and B pins (most common configuration).
-    pub fn new(
-        peri: Peri<'d, T>,
-        a: Peri<'d, impl APin<T>>,
-        b: Peri<'d, impl BPin<T>>,
-    ) -> Self {
+    pub fn new(peri: Peri<'d, T>, a: Peri<'d, impl APin<T>>, b: Peri<'d, impl BPin<T>>) -> Self {
         // Configure pins before converting to AnyPin
         a.set_as_alt(a.alt_num());
         b.set_as_alt(b.alt_num());
