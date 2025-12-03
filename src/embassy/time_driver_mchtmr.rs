@@ -165,8 +165,11 @@ impl embassy_time_driver::Driver for MachineTimerDriver {
     }
 }
 
-#[riscv_rt::core_interrupt(riscv::interrupt::machine::Interrupt::MachineTimer)]
-fn machine_timer() {
+/// MachineTimer interrupt handler.
+/// This symbol overrides the weak default in hpm-riscv-rt.
+#[unsafe(no_mangle)]
+#[allow(non_snake_case)]
+extern "C" fn MachineTimer() {
     DRIVER.on_interrupt();
 }
 

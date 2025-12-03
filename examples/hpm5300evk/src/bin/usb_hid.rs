@@ -19,9 +19,9 @@ use static_cell::StaticCell;
 use usbd_hid::descriptor::{KeyboardReport, SerializedDescriptor};
 use {defmt_rtt as _};
 
-// Create interrupt bindings
-struct Irqs;
-unsafe impl hal::interrupt::typelevel::Binding<hal::interrupt::typelevel::USB0, hal::usb::InterruptHandler<peripherals::USB0>> for Irqs {}
+hal::bind_interrupts!(struct Irqs {
+    USB0 => hal::usb::InterruptHandler<peripherals::USB0>;
+});
 
 static STATE: StaticCell<State> = StaticCell::new();
 

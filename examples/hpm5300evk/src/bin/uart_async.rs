@@ -7,14 +7,14 @@
 use embassy_executor::Spawner;
 use embassy_time::Timer;
 use hal::gpio::{AnyPin, Flex};
-use hal::interrupt::typelevel::Binding;
 use hal::Peri;
 use hpm_hal::peripherals;
 use hpm_hal::time::Hertz;
 use {defmt_rtt as _, hpm_hal as hal};
 
-struct Irqs;
-unsafe impl Binding<hal::interrupt::typelevel::UART0, hal::uart::InterruptHandler<peripherals::UART0>> for Irqs {}
+hal::bind_interrupts!(struct Irqs {
+    UART0 => hal::uart::InterruptHandler<peripherals::UART0>;
+});
 
 const BANNER: &str = include_str!("../../../assets/BANNER");
 
@@ -66,6 +66,8 @@ async fn main(spawner: Spawner) -> ! {
     uart.write(BANNER.as_bytes()).await.unwrap();
     uart.write(b"Hello Async World!\r\n").await.unwrap();
     uart.write(b"Type something: ").await.unwrap();
+
+    defmt::info!(".....................");
 
     let mut buf = [0u8; 256];
     loop {

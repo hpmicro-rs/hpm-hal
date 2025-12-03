@@ -207,7 +207,7 @@ pub struct InterruptHandler<T: Instance> {
 }
 
 impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandler<T> {
-    unsafe fn on_interrupt() {
+    unsafe fn on_interrupt() { defmt::info!("on_interrupt");
         on_interrupt(T::info().regs, T::state());
 
         // PLIC ack is handled by typelevel Handler

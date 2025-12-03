@@ -7,14 +7,14 @@
 use embassy_executor::Spawner;
 use embassy_time::Timer;
 use hal::gpio::{Level, Output};
-use hal::interrupt::typelevel::Binding;
 use hal::mbx::Mbx;
 use hal::peripherals;
 use {defmt_rtt as _, hpm_hal as hal};
 
-struct Irqs;
-unsafe impl Binding<hal::interrupt::typelevel::MBX0A, hal::mbx::InterruptHandler<peripherals::MBX0A>> for Irqs {}
-unsafe impl Binding<hal::interrupt::typelevel::MBX0B, hal::mbx::InterruptHandler<peripherals::MBX0B>> for Irqs {}
+hal::bind_interrupts!(struct Irqs {
+    MBX0A => hal::mbx::InterruptHandler<peripherals::MBX0A>;
+    MBX0B => hal::mbx::InterruptHandler<peripherals::MBX0B>;
+});
 
 #[embassy_executor::task]
 async fn mailbox(mbx: Mbx<'static>) {

@@ -99,20 +99,28 @@ SECTIONS
     *(.text .text.*);
   } > REGION_TEXT
 
-  /* In-ILM code section */
-  .fast : ALIGN(4)
+  /* Vector table and fast code section - placed in ILM */
+  .fast : ALIGN(512)
   {
     _sifast = LOADADDR(.fast);
     _sfast = .;
+    __vector_ram_start__ = .;
     /** CAUTION:
         ILM0 starts at 0x00000000. Using this as an IRQ handler address results in `None` when cast to `Option<fn()>`.
         The IRQ handler will not be called.
     */
     KEEP(*(.vector_table.interrupts));
-    *(.fast .fast.*);
+    __vector_ram_end__ = .;
+    . = ALIGN(8);
+    __fast_text_start__ = .;
+    *(.trap.rust);
+    *(.fast .fast.* .fast.text .fast.text.*);
     . = ALIGN(4);
-    PROVIDE(_efast= .); /* No idea why `PROVIDE` is needed here */
+    __fast_text_end__ = .;
+    PROVIDE(_efast= .);
   } > REGION_FASTTEXT AT > REGION_RODATA
+  __vector_load_addr__ = LOADADDR(.fast);
+  __fast_text_load_addr__ = _sifast;
 
   .rodata : ALIGN(4)
   {
@@ -144,6 +152,25 @@ SECTIONS
     . = ALIGN(4);
     _ebss = .;
   } > REGION_BSS
+
+  /* Fast data section - placed in DLM */
+  .fast.data : ALIGN(4)
+  {
+    __fast_data_start__ = .;
+    *(.fast.data .fast.data.*);
+    . = ALIGN(4);
+    __fast_data_end__ = .;
+  } > REGION_DATA AT > REGION_RODATA
+  __fast_data_load_addr__ = LOADADDR(.fast.data);
+
+  /* Fast BSS section - placed in DLM */
+  .fast.bss (NOLOAD) : ALIGN(4)
+  {
+    __fast_bss_start__ = .;
+    *(.fast.bss .fast.bss.*);
+    . = ALIGN(4);
+    __fast_bss_end__ = .;
+  } > REGION_DATA
 
   /* fictitious region that represents the memory available for the heap */
   .heap (NOLOAD) :
