@@ -76,7 +76,7 @@ pub mod rng;
 pub mod trgm;
 
 #[cfg(feature = "rt")]
-pub use riscv_rt::{entry, pre_init};
+pub use hpm_riscv_rt::{entry, pre_init, fast, external_interrupt};
 
 #[cfg(feature = "embassy")]
 pub mod embassy;
@@ -123,6 +123,8 @@ mod patches;
 ///
 
 // developer note: this macro can't be in `embassy-hal-internal` due to the use of `$crate`.
+// Uses #[no_mangle] + extern "riscv-interrupt-m" instead of riscv_rt::external_interrupt
+// because attribute macros cannot be re-exported via $crate.
 #[macro_export]
 macro_rules! bind_interrupts {
     ($vis:vis struct $name:ident { $($irq:ident => $($handler:ty),*;)* }) => {
@@ -130,8 +132,8 @@ macro_rules! bind_interrupts {
         $vis struct $name;
 
         $(
-            #[$crate::interrupt]
-            fn $irq() {
+            #[$crate::external_interrupt($crate::pac::interrupt::$irq)]
+            unsafe fn $irq() {
                 use $crate::interrupt::InterruptExt;
 
                 $(
@@ -182,12 +184,5 @@ pub unsafe fn uninited() -> Peripherals {
     Peripherals::take()
 }
 
-#[cfg(feature = "rt")]
-core::arch::global_asm!(
-    r#".section .init.pre_init, "ax"
-    .global __pre_init
-__pre_init:
-    // Do some pre-initialization work here and return
-    ret
-    "#
-);
+// Note: __pre_init is provided by hpm-riscv-rt with a weak default.
+// Users can override it using the #[pre_init] attribute macro.

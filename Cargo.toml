@@ -20,12 +20,11 @@ hpm-metapac = { path = "../hpm-data/build/hpm-metapac" }
 # crates.io
 # hpm-metapac = { version = "0.0.5" }
 
-# hpm-riscv-rt = { version = "0.1.2", optional = true }
-# hpm-riscv-rt = { path = "../hpm-riscv-rt", optional = true }
+hpm-riscv-rt = { path = "../hpm-riscv-rt", optional = true }
 andes-riscv = { version = "0.1.1" }
 
 riscv = { version = "0.15.0", features = ["critical-section-single-hart"] }
-riscv-rt = { version = "0.16.0", features = ["device", "pre-init"], optional = true }
+riscv-pac = "0.2.0"
 
 embedded-hal = { version = "1.0.0" }
 embassy-time-driver = { version = "0.2.1", features = [
@@ -67,7 +66,7 @@ quote = "1.0.37"
 [features]
 default = ["rt", "embassy", "time"]
 
-rt = ["dep:riscv-rt", "hpm-metapac/rt"]
+rt = ["dep:hpm-riscv-rt", "hpm-metapac/rt"]
 defmt = ["dep:defmt", "embassy-usb-driver/defmt"]
 time = ["dep:embassy-time"]
 embassy = ["dep:embassy-time-driver", "dep:embassy-time-queue-utils"]

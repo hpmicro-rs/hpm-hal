@@ -14,9 +14,9 @@ use hal::usb::{Instance, UsbDriver};
 use hpm_hal::peripherals;
 use {defmt_rtt as _, hpm_hal as hal};
 
-// Create interrupt bindings
-struct Irqs;
-unsafe impl hal::interrupt::typelevel::Binding<hal::interrupt::typelevel::USB0, hal::usb::InterruptHandler<peripherals::USB0>> for Irqs {}
+hal::bind_interrupts!(struct Irqs {
+    USB0 => hal::usb::InterruptHandler<peripherals::USB0>;
+});
 
 #[embassy_executor::main(entry = "hpm_hal::entry")]
 async fn main(_spawner: Spawner) -> ! {

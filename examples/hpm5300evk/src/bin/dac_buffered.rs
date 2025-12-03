@@ -8,7 +8,6 @@ use defmt::println;
 use embassy_executor::Spawner;
 use embassy_time::Timer;
 use hal::gpio::{AnyPin, Flex};
-use hal::interrupt::typelevel::Binding;
 use hal::Peri;
 use hpm_hal::peripherals;
 use hpm_hal::time::Hertz;
@@ -18,8 +17,9 @@ use {defmt_rtt as _, hpm_hal as hal};
 const BOARD_NAME: &str = "HPM5300EVK";
 const BANNER: &str = include_str!("../../../assets/BANNER");
 
-struct Irqs;
-unsafe impl Binding<hal::interrupt::typelevel::DAC0, hal::dac::InterruptHandler<peripherals::DAC0>> for Irqs {}
+hal::bind_interrupts!(struct Irqs {
+    DAC0 => hal::dac::InterruptHandler<peripherals::DAC0>;
+});
 
 #[embassy_executor::task(pool_size = 2)]
 async fn blink(pin: Peri<'static, AnyPin>) {

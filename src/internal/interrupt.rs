@@ -2,7 +2,7 @@ use core::mem;
 use core::sync::atomic::{Ordering, compiler_fence};
 
 use critical_section::CriticalSection;
-use riscv_rt::InterruptNumber;
+use riscv_pac::InterruptNumber;
 
 use crate::pac;
 use crate::pac::PLIC;
@@ -300,7 +300,7 @@ pub enum Priority {
     P7 = 7,
 }
 
-unsafe impl riscv_rt::PriorityNumber for Priority {
+unsafe impl riscv_pac::PriorityNumber for Priority {
     const MAX_PRIORITY_NUMBER: usize = 7;
 
     fn number(self) -> usize {
@@ -309,7 +309,7 @@ unsafe impl riscv_rt::PriorityNumber for Priority {
 
     fn from_number(value: usize) -> riscv::result::Result<Self> {
         if value > 7 {
-            Err(riscv_rt::result::Error::InvalidVariant(value))
+            Err(riscv::result::Error::InvalidVariant(value))
         } else {
             Ok(unsafe { mem::transmute(value as u8) })
         }
