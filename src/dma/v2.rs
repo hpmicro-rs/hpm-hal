@@ -127,6 +127,9 @@ pub(crate) unsafe fn init(cs: critical_section::CriticalSection) {
 
     pac::HDMA.dmactrl().modify(|w| w.set_reset(true));
 
+    // Wait for DMA reset to complete
+    while pac::HDMA.dmactrl().read().reset() {}
+
     interrupt::typelevel::HDMA::set_priority_with_cs(cs, interrupt::Priority::P1);
     interrupt::typelevel::HDMA::enable();
 }
@@ -550,8 +553,11 @@ impl<'a> Transfer<'a> {
 
 impl<'a> Drop for Transfer<'a> {
     fn drop(&mut self) {
-        self.request_abort();
-        while self.is_running() {}
+        // Only abort if still running - avoid clearing DMAMUX state for completed transfers
+        if self.is_running() {
+            self.request_abort();
+            while self.is_running() {}
+        }
 
         // "Subsequent reads and writes cannot be moved ahead of preceding reads."
         fence(Ordering::SeqCst);
@@ -566,7 +572,12 @@ impl<'a> Future for Transfer<'a> {
 
         state.waker.register(cx.waker());
 
-        if self.is_running() {
+        let running = self.is_running();
+        let info = self.channel.info();
+        let r = info.dma.regs();
+        let num = info.num;
+        let ch_cr = r.chctrl(num);
+        if running {
             Poll::Pending
         } else {
             Poll::Ready(())

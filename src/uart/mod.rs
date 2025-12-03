@@ -149,7 +149,9 @@ impl Default for Config {
             #[cfg(not(ip_feature_uart_fine_fifo_thrld))]
             fifo_level: Some((TxFifoTrigger::NOT_FULL, RxFifoTrigger::NOT_EMPTY)),
             #[cfg(ip_feature_uart_fine_fifo_thrld)]
-            fifo_level: Some((FifoTriggerLevel::Byte16, FifoTriggerLevel::Byte1)),
+            // TX trigger: when FIFO free space >= 1, trigger DMA request
+            // RX trigger: when FIFO has >= 1 byte, trigger DMA request
+            fifo_level: Some((FifoTriggerLevel::Byte1, FifoTriggerLevel::Byte1)),
             // no detect
             detect_previous_overrun: false,
         }
@@ -207,7 +209,7 @@ pub struct InterruptHandler<T: Instance> {
 }
 
 impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandler<T> {
-    unsafe fn on_interrupt() { defmt::info!("on_interrupt");
+    unsafe fn on_interrupt() {
         on_interrupt(T::info().regs, T::state());
 
         // PLIC ack is handled by typelevel Handler
@@ -317,6 +319,10 @@ impl<'d> UartTx<'d, Async> {
     /// Initiate an asynchronous UART write
     /// Ref: HPM6700_6400_Errata_V2_0.pdf "E00018：UART DMA 请求使用限制"
     pub async fn write(&mut self, buffer: &[u8]) -> Result<(), Error> {
+        if buffer.is_empty() {
+            return Ok(());
+        }
+
         let r = self.info.regs;
 
         #[cfg(ip_feature_uart_fine_fifo_thrld)]
@@ -336,6 +342,13 @@ impl<'d> UartTx<'d, Async> {
         // is held across an await and makes the future non-Send.
         let transfer = unsafe { ch.write(buffer, r.thr().as_ptr() as *mut u8, Default::default()) };
         transfer.await;
+
+        // Wait for TX FIFO to empty before disabling DMA
+        // This ensures the next DMA transfer will have free space to trigger
+        // Using yield_now() allows other tasks to run while waiting
+        while !r.lsr().read().temt() {
+            embassy_futures::yield_now().await;
+        }
 
         #[cfg(ip_feature_uart_fine_fifo_thrld)]
         r.fcrr().modify(|w| {

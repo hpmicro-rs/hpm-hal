@@ -9,7 +9,6 @@ use embassy_time::Timer;
 use hal::gpio::{AnyPin, Flex};
 use hal::Peri;
 use hpm_hal::peripherals;
-use hpm_hal::time::Hertz;
 use {defmt_rtt as _, hpm_hal as hal};
 
 hal::bind_interrupts!(struct Irqs {
@@ -26,30 +25,17 @@ async fn blink(pin: Peri<'static, AnyPin>) {
 
     loop {
         led.toggle();
-
         Timer::after_millis(500).await;
     }
 }
 
 #[embassy_executor::main(entry = "hpm_hal::entry")]
 async fn main(spawner: Spawner) -> ! {
-    let mut config = hal::Config::default();
-    {
-        use hal::sysctl::*;
-        config.sysctl.pll0 = Some(Pll {
-            div: (0, 1, 3),
-            freq_in: Hertz::mhz(960),
-        });
-        config.sysctl.cpu0 = ClockConfig::new(ClockMux::PLL0CLK0, 2);
-        config.sysctl.ahb_div = AHBDiv::DIV3;
-    }
-
-    let p = hal::init(config);
+    let p = hal::init(Default::default());
 
     spawner.spawn(blink(p.PA23.into())).unwrap();
     spawner.spawn(blink(p.PA10.into())).unwrap();
 
-    // let button = Input::new(p.PA03, Pull::Down); // hpm5300evklite, BOOT1_KEY
     let mut uart = hal::uart::Uart::new(
         p.UART0,
         p.PA01,
@@ -61,13 +47,9 @@ async fn main(spawner: Spawner) -> ! {
     )
     .unwrap();
 
-    defmt::info!("Loop");
-
     uart.write(BANNER.as_bytes()).await.unwrap();
     uart.write(b"Hello Async World!\r\n").await.unwrap();
     uart.write(b"Type something: ").await.unwrap();
-
-    defmt::info!(".....................");
 
     let mut buf = [0u8; 256];
     loop {
