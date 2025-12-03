@@ -184,8 +184,8 @@ impl embassy_time_driver::Driver for MachineTimerDriver {
 }
 
 // Core local interrupts are handled in CORE_LOCAL
-#[interrupt]
-fn MachineTimer() {
+#[riscv_rt::core_interrupt(riscv::interrupt::machine::Interrupt::MachineTimer)]
+fn machine_timer() {
     DRIVER.on_interrupt();
 }
 
