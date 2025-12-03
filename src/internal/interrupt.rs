@@ -1,10 +1,12 @@
+use core::iter::Product;
 use core::mem;
 use core::sync::atomic::{compiler_fence, Ordering};
 
 use critical_section::CriticalSection;
 
 use crate::pac;
-use crate::pac::{InterruptNumber, PLIC};
+use crate::pac::{PLIC};
+use riscv_rt::InterruptNumber;
 
 /// Generate a standard `mod interrupt` for a HAL.
 #[macro_export]
@@ -228,7 +230,7 @@ pub unsafe trait InterruptExt: InterruptNumber + Copy {
     fn complete(self) {
         PLIC.targetconfig(0)
             .claim()
-            .modify(|w| w.set_interrupt_id(self.number()));
+            .modify(|w| w.set_interrupt_id(self.number() as u16));
     }
 }
 
@@ -297,4 +299,20 @@ pub enum Priority {
     P5 = 5,
     P6 = 6,
     P7 = 7,
+}
+
+unsafe impl riscv_rt::PriorityNumber for Priority {
+    const MAX_PRIORITY_NUMBER: usize = 7;
+
+    fn number(self) -> usize {
+        self as usize
+    }
+
+    fn from_number(value: usize) -> riscv::result::Result<Self> {
+        if value > 7 {
+            Err(riscv_rt::result::Error::InvalidVariant(value))
+        } else {
+            Ok(unsafe { mem::transmute(value as u8) })
+        }
+    }
 }

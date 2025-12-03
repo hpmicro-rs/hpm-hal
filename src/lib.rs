@@ -1,6 +1,5 @@
 #![no_std]
-#![feature(abi_riscv_interrupt)]
-#![allow(unexpected_cfgs, static_mut_refs)]
+#![allow(unexpected_cfgs, static_mut_refs, unsafe_op_in_unsafe_fn)]
 
 #[doc(hidden)]
 pub(crate) mod internal;
@@ -77,7 +76,7 @@ pub mod rng;
 pub mod trgm;
 
 #[cfg(feature = "rt")]
-pub use hpm_riscv_rt::{entry, interrupt, pre_init};
+pub use riscv_rt::{entry, pre_init};
 
 #[cfg(feature = "embassy")]
 pub mod embassy;
@@ -182,3 +181,14 @@ pub fn init(config: Config) -> Peripherals {
 pub unsafe fn uninited() -> Peripherals {
     Peripherals::take()
 }
+
+
+#[cfg(feature = "rt")]
+core::arch::global_asm!(
+    r#".section .init.pre_init, "ax"
+    .global __pre_init
+__pre_init:
+    // Do some pre-initialization work here and return
+    ret
+    "#
+);

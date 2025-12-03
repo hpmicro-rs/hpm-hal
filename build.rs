@@ -503,9 +503,9 @@ fn main() {
 
             quote! {
                 #[cfg(feature = "rt")]
-                #[crate::interrupt]
+                #[riscv_rt::external_interrupt(hpm_metapac::interrupt::#irq)]
                 fn #irq() {
-                    <crate::peripherals::#peri_name as crate::dma::ControllerInterrupt>::on_irq();
+                    unsafe { <crate::peripherals::#peri_name as crate::dma::ControllerInterrupt>::on_irq() };
                 }
             }
         })
@@ -552,10 +552,10 @@ fn main() {
             };
 
             g.extend(quote! {
-                #[crate::interrupt]
+                #[riscv_rt::external_interrupt(hpm_metapac::interrupt::#irq_ident)]
                 fn #irq_ident() {
                     use crate::interrupt::InterruptExt;
-                    crate::gpio::input_future::on_interrupt(crate::pac::GPIO0, #port_offset);
+                    unsafe { crate::gpio::input_future::on_interrupt(crate::pac::GPIO0, #port_offset) };
 
                     core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
                     crate::interrupt::#irq_ident.complete();
