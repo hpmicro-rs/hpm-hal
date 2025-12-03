@@ -13,6 +13,9 @@
 //! - UART_FINE_FIFO_THRLD: v53
 //! - UART_IIR2:            v53
 
+mod buffered;
+pub use buffered::*;
+
 use core::future::poll_fn;
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicU8, AtomicU32, Ordering, compiler_fence};
@@ -1455,6 +1458,7 @@ struct Info {
 pub(crate) trait SealedInstance: crate::sysctl::ClockPeripheral {
     fn info() -> &'static Info;
     fn state() -> &'static State;
+    fn buffered_state() -> &'static BufferedState;
 }
 
 /// USART peripheral instance trait.
@@ -1488,6 +1492,11 @@ macro_rules! impl_uart {
 
             fn state() -> &'static State {
                 static STATE: State = State::new();
+                &STATE
+            }
+
+            fn buffered_state() -> &'static BufferedState {
+                static STATE: BufferedState = BufferedState::new();
                 &STATE
             }
         }
