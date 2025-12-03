@@ -10,12 +10,10 @@ use embassy_hal_internal::Peri;
 use embassy_hal_internal::atomic_ring_buffer::RingBuffer;
 use embassy_sync::waitqueue::AtomicWaker;
 
-use super::{
-    Config, ConfigError, Error, Info, Instance, configure, reconfigure, AnyPin, SealedPin,
-};
+use super::{AnyPin, Config, ConfigError, Error, Info, Instance, SealedPin, configure, reconfigure};
 use crate::interrupt::{self, InterruptExt};
-use crate::time::Hertz;
 use crate::pac;
+use crate::time::Hertz;
 
 /// Interrupt handler for buffered UART.
 pub struct BufferedInterruptHandler<T: Instance> {
@@ -122,7 +120,7 @@ unsafe fn on_interrupt(r: pac::uart::Uart, state: &'static BufferedState) {
 pub(super) struct BufferedState {
     rx_waker: AtomicWaker,
     rx_buf: RingBuffer,
-    rx_woken: AtomicBool,  // Track if rx_waker was explicitly woken
+    rx_woken: AtomicBool, // Track if rx_waker was explicitly woken
     tx_waker: AtomicWaker,
     tx_buf: RingBuffer,
     tx_done: AtomicBool,
@@ -181,14 +179,7 @@ impl<'d> BufferedUart<'d> {
         rx.set_as_alt(rx.alt_num());
         tx.set_as_alt(tx.alt_num());
 
-        Self::new_inner(
-            peri,
-            Some(rx.into()),
-            Some(tx.into()),
-            tx_buffer,
-            rx_buffer,
-            config,
-        )
+        Self::new_inner(peri, Some(rx.into()), Some(tx.into()), tx_buffer, rx_buffer, config)
     }
 
     fn new_inner<T: Instance>(
@@ -250,8 +241,8 @@ impl<'d> BufferedUart<'d> {
         // ERBI moves data from hardware FIFO to software ring buffer (prevents overrun)
         // ERXIDLE triggers wake when sender stops (for batch processing)
         info.regs.ier().modify(|w| {
-            w.set_erbi(true);  // Enable Received Data Available Interrupt
-            w.set_elsi(true);  // Enable Receiver Line Status Interrupt (errors)
+            w.set_erbi(true); // Enable Received Data Available Interrupt
+            w.set_elsi(true); // Enable Receiver Line Status Interrupt (errors)
             #[cfg(ip_feature_uart_rx_idle_detect)]
             w.set_erxidle(true); // Enable RX Idle Interrupt
         });
@@ -313,14 +304,14 @@ impl<'d> BufferedUartRx<'d> {
     async fn read(&self, buf: &mut [u8]) -> Result<usize, Error> {
         poll_fn(move |cx| {
             let state = self.state;
-            
+
             // Only proceed if we were explicitly woken (IDLE detected)
             // This prevents returning data on every executor poll
             if !state.rx_woken.swap(false, Ordering::AcqRel) {
                 state.rx_waker.register(cx.waker());
                 return Poll::Pending;
             }
-            
+
             // We were woken (IDLE detected), now read all available data
             let mut rx_reader = unsafe { state.rx_buf.reader() };
             let mut buf_len = 0;
@@ -743,4 +734,3 @@ impl<'d> embedded_hal_nb::serial::Write for BufferedUart<'d> {
         self.tx.blocking_flush().map_err(nb::Error::Other)
     }
 }
-
