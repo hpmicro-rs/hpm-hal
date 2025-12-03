@@ -5,7 +5,7 @@
 #![feature(abi_riscv_interrupt)]
 
 use embassy_time::Timer;
-use hpm_hal::gpio::{Level, NoPin, Output};
+use hpm_hal::gpio::{Level, Output};
 use hpm_hal::interrupt::InterruptExt as _;
 use hpm_hal::pac::qei::vals;
 use {defmt_rtt as _, hpm_hal as hal};
@@ -52,7 +52,7 @@ async fn main(_spawner: embassy_executor::Spawner) -> ! {
     // A: PA10
     // B: PA11
     // Z: PA12
-    let qei = hal::qei::Qei::new_uninited(p.QEI1, p.PA10, p.PA11, p.PA12, NoPin, NoPin, NoPin);
+    let qei = hal::qei::Qei::new_with_z(p.QEI1, p.PA10, p.PA11, p.PA12);
 
     let r = qei.regs();
 

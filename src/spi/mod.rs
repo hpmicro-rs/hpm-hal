@@ -10,7 +10,7 @@ use core::ptr;
 
 use embassy_futures::join::join;
 use embassy_futures::yield_now;
-use embassy_hal_internal::{Peri, PeripheralType};
+use embassy_hal_internal::Peri;
 use embassy_sync::waitqueue::AtomicWaker;
 // re-export
 pub use embedded_hal::spi::{MODE_0, MODE_1, MODE_2, MODE_3, Mode};
@@ -232,7 +232,6 @@ impl<'d> Spi<'d, Blocking> {
         miso: Peri<'d, impl MisoPin<T>>,
         config: Config,
     ) -> Self {
-
         T::add_resource_group(0);
 
         mosi.set_as_alt(mosi.alt_num());
@@ -261,7 +260,6 @@ impl<'d> Spi<'d, Blocking> {
         mosi: Peri<'d, impl MosiPin<T>>,
         mut config: Config,
     ) -> Self {
-
         T::add_resource_group(0);
 
         mosi.set_as_alt(mosi.alt_num());
@@ -290,7 +288,6 @@ impl<'d> Spi<'d, Blocking> {
         miso: Peri<'d, impl MisoPin<T>>,
         config: Config,
     ) -> Self {
-
         T::add_resource_group(0);
 
         miso.set_as_alt(miso.alt_num());
@@ -319,7 +316,6 @@ impl<'d> Spi<'d, Blocking> {
         mosi: Peri<'d, impl MosiPin<T>>,
         config: Config,
     ) -> Self {
-
         T::add_resource_group(0);
 
         mosi.set_as_alt(mosi.alt_num());
@@ -364,7 +360,6 @@ impl<'d> Spi<'d, Blocking> {
         d3: Peri<'d, impl D3Pin<T>>,
         config: Config,
     ) -> Self {
-
         T::add_resource_group(0);
 
         cs.set_as_alt(cs.alt_num());
@@ -408,7 +403,6 @@ impl<'d> Spi<'d, Async> {
         rx_dma: Peri<'d, impl RxDma<T>>,
         config: Config,
     ) -> Self {
-
         T::add_resource_group(0);
 
         mosi.set_as_alt(mosi.alt_num());
@@ -439,7 +433,6 @@ impl<'d> Spi<'d, Async> {
         rx_dma: Peri<'d, impl RxDma<T>>,
         mut config: Config,
     ) -> Self {
-
         T::add_resource_group(0);
 
         mosi.set_as_alt(mosi.alt_num());
@@ -470,7 +463,6 @@ impl<'d> Spi<'d, Async> {
         rx_dma: Peri<'d, impl RxDma<T>>,
         config: Config,
     ) -> Self {
-
         T::add_resource_group(0);
 
         miso.set_as_alt(miso.alt_num());
@@ -500,7 +492,6 @@ impl<'d> Spi<'d, Async> {
         tx_dma: Peri<'d, impl TxDma<T>>,
         config: Config,
     ) -> Self {
-
         T::add_resource_group(0);
 
         mosi.set_as_alt(mosi.alt_num());

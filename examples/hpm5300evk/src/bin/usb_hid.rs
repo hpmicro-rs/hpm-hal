@@ -13,14 +13,15 @@ use embassy_usb::control::OutResponse;
 use embassy_usb::{Builder, Handler};
 use futures_util::future::join;
 use hpm_hal::gpio::{Input, Pull};
-use hpm_hal::{bind_interrupts, peripherals};
+use hpm_hal::peripherals;
+use hpm_hal as hal;
 use static_cell::StaticCell;
 use usbd_hid::descriptor::{KeyboardReport, SerializedDescriptor};
-use {defmt_rtt as _, hpm_hal as hal};
+use {defmt_rtt as _};
 
-bind_interrupts!(struct Irqs {
-    USB0 => hal::usb::InterruptHandler<peripherals::USB0>;
-});
+// Create interrupt bindings
+struct Irqs;
+unsafe impl hal::interrupt::typelevel::Binding<hal::interrupt::typelevel::USB0, hal::usb::InterruptHandler<peripherals::USB0>> for Irqs {}
 
 static STATE: StaticCell<State> = StaticCell::new();
 
@@ -28,7 +29,7 @@ static STATE: StaticCell<State> = StaticCell::new();
 async fn main(_spawner: Spawner) -> ! {
     let p = hal::init(Default::default());
 
-    let usb_driver = hal::usb::UsbDriver::new(p.USB0, p.PA24, p.PA25);
+    let usb_driver = hal::usb::UsbDriver::new(p.USB0, Irqs, p.PA24, p.PA25);
 
     // Create embassy-usb Config
     let mut config = embassy_usb::Config::new(0xc0de, 0xcafe);
@@ -99,7 +100,14 @@ async fn main(_spawner: Spawner) -> ! {
                 reserved: 0,
             };
             // Send the report.
-            match writer.write_serialize(&report).await {
+            let report_bytes = [
+                report.modifier, report.reserved, 
+                report.keycodes[0], report.keycodes[1], 
+                report.keycodes[2], report.keycodes[3], 
+                report.keycodes[4], report.keycodes[5],
+                report.leds,
+            ];
+            match writer.write(&report_bytes).await {
                 Ok(()) => {}
                 Err(e) => warn!("Failed to send report: {:?}", e),
             };
@@ -111,7 +119,14 @@ async fn main(_spawner: Spawner) -> ! {
                 modifier: 0,
                 reserved: 0,
             };
-            match writer.write_serialize(&report).await {
+            let report_bytes = [
+                report.modifier, report.reserved, 
+                report.keycodes[0], report.keycodes[1], 
+                report.keycodes[2], report.keycodes[3], 
+                report.keycodes[4], report.keycodes[5],
+                report.leds,
+            ];
+            match writer.write(&report_bytes).await {
                 Ok(()) => {}
                 Err(e) => warn!("Failed to send report: {:?}", e),
             };

@@ -6,15 +6,16 @@
 use defmt::println;
 use embassy_executor::Spawner;
 use embassy_time::Timer;
-use hal::gpio::{AnyPin, Flex, Pin};
+use hal::gpio::{AnyPin, Flex};
 use hal::pac::MCHTMR;
+use hal::Peri;
 use {defmt_rtt as _, hpm_hal as hal};
 
 const BOARD_NAME: &str = "HPM5300EVK";
 
 #[embassy_executor::task(pool_size = 2)]
-async fn blink(pin: AnyPin) {
-    let mut led = Flex::new(unsafe { hal::Peri::new_unchecked(pin) });
+async fn blink(pin: Peri<'static, AnyPin>) {
+    let mut led = Flex::new(pin);
     led.set_as_output(Default::default());
     led.set_high();
 
@@ -42,8 +43,8 @@ async fn main(spawner: Spawner) -> ! {
     println!("Hello, world!");
 
     // Test concurrent timers with embassy async
-    spawner.spawn(blink(p.PA23.degrade())).unwrap();
-    spawner.spawn(blink(p.PA10.degrade())).unwrap();
+    spawner.spawn(blink(p.PA23.into())).unwrap();
+    spawner.spawn(blink(p.PA10.into())).unwrap();
 
     loop {
         Timer::after_millis(1000).await;

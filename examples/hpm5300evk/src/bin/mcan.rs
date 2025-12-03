@@ -9,7 +9,7 @@
 // use defmt::println;
 use embassy_executor::Spawner;
 use embassy_time::Timer;
-use embedded_io::Write as _;
+use core::fmt::Write;
 use hal::gpio::{Level, Output, Pin};
 use hal::interrupt::InterruptExt;
 use hal::mcan::Dependencies;

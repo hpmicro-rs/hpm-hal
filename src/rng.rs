@@ -131,11 +131,6 @@ impl<'d, T: Instance + PeripheralType> RngCore for Rng<'d, T> {
             }
         }
     }
-
-    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand_core::Error> {
-        self.fill_bytes(dest);
-        Ok(())
-    }
 }
 
 impl<'d, T: Instance + PeripheralType> CryptoRng for Rng<'d, T> {}

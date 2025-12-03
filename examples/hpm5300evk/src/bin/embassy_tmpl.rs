@@ -3,13 +3,14 @@
 #![feature(type_alias_impl_trait)]
 #![feature(impl_trait_in_assoc_type)]
 
+use core::fmt::Write;
 use defmt::println;
 use embassy_executor::Spawner;
 use embassy_time::Timer;
-use embedded_io::Write as _;
-use hal::gpio::{AnyPin, Flex, Pin};
+use hal::gpio::{AnyPin, Flex};
 use hal::pac;
 use hal::pac::MCHTMR;
+use hal::Peri;
 use hpm_hal::mode::Blocking;
 use {defmt_rtt as _, hpm_hal as hal};
 
@@ -17,7 +18,7 @@ const BOARD_NAME: &str = "HPM5300EVK";
 const BANNER: &str = include_str!("../../../assets/BANNER");
 
 #[embassy_executor::task]
-async fn blink(pin: AnyPin) {
+async fn blink(pin: Peri<'static, AnyPin>) {
     let mut led = Flex::new(pin);
     led.set_as_output(Default::default());
     led.set_high();
@@ -68,7 +69,7 @@ async fn main(spawner: Spawner) -> ! {
     //let mie = riscv::register::mie::read();
     //println!("mie: {:?}", mie);
 
-    spawner.spawn(blink(p.PA23.degrade())).unwrap();
+    spawner.spawn(blink(p.PA23.into())).unwrap();
 
     loop {
         Timer::after_millis(1000).await;

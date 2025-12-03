@@ -6,7 +6,7 @@
 use core::marker::PhantomData;
 use core::mem;
 
-use embassy_hal_internal::PeripheralType;
+use embassy_hal_internal::{Peri, PeripheralType};
 pub use hpm_metapac::femc::vals::{
     Bank2Sel, BurstLen, CasLatency, ColAddrBits, DataSize, Dqs, MemorySize, SdramCmd, SdramPortSize,
 };
@@ -168,9 +168,9 @@ unsafe impl<'d, T> Send for Femc<'d, T> where T: Instance {}
 
 impl<'d, T> Femc<'d, T>
 where
-    T: Instance,
+    T: Instance + PeripheralType,
 {
-    pub fn new_raw(_instance: impl Peripheral<P = T> + 'd) -> Self {
+    pub fn new_raw(_instance: Peri<'d, T>) -> Self {
         T::add_resource_group(0);
 
         Self { peri: PhantomData }

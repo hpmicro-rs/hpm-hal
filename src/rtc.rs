@@ -12,15 +12,13 @@ pub enum Alarms {
 }
 
 /// A reference to the real time clock of the system
-pub struct Rtc<'d, T: Instance> {
-    _inner: PeripheralRef<'d, T>,
+pub struct Rtc<'d, T: Instance + PeripheralType> {
+    _inner: Peri<'d, T>,
 }
 
-impl<'d, T: Instance> Rtc<'d, T> {
+impl<'d, T: Instance + PeripheralType> Rtc<'d, T> {
     /// Create a new instance of the real time clock
-    pub fn new(inner: impl Peripheral<P = T> + 'd) -> Self {
-        into_ref!(inner);
-
+    pub fn new(inner: Peri<'d, T>) -> Self {
         Self { _inner: inner }
     }
 

@@ -6,19 +6,20 @@
 
 use embassy_executor::Spawner;
 use embassy_time::Timer;
-use hal::gpio::{AnyPin, Flex, Pin};
+use hal::gpio::{AnyPin, Flex};
+use hal::interrupt::typelevel::Binding;
+use hal::Peri;
+use hpm_hal::peripherals;
 use hpm_hal::time::Hertz;
-use hpm_hal::{bind_interrupts, peripherals};
 use {defmt_rtt as _, hpm_hal as hal};
 
-bind_interrupts!(struct Irqs {
-    UART0 => hal::uart::InterruptHandler<peripherals::UART0>;
-});
+struct Irqs;
+unsafe impl Binding<hal::interrupt::typelevel::UART0, hal::uart::InterruptHandler<peripherals::UART0>> for Irqs {}
 
 const BANNER: &str = include_str!("../../../assets/BANNER");
 
 #[embassy_executor::task(pool_size = 2)]
-async fn blink(pin: AnyPin) {
+async fn blink(pin: Peri<'static, AnyPin>) {
     let mut led = Flex::new(pin);
     led.set_as_output(Default::default());
     led.set_high();
@@ -45,8 +46,8 @@ async fn main(spawner: Spawner) -> ! {
 
     let p = hal::init(config);
 
-    spawner.spawn(blink(p.PA23.degrade())).unwrap();
-    spawner.spawn(blink(p.PA10.degrade())).unwrap();
+    spawner.spawn(blink(p.PA23.into())).unwrap();
+    spawner.spawn(blink(p.PA10.into())).unwrap();
 
     // let button = Input::new(p.PA03, Pull::Down); // hpm5300evklite, BOOT1_KEY
     let mut uart = hal::uart::Uart::new(

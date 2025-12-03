@@ -14,7 +14,7 @@
 use core::marker::PhantomData;
 use core::ops;
 
-use embassy_hal_internal::{Peri, PeripheralType};
+use embassy_hal_internal::Peri;
 use embassy_sync::waitqueue::AtomicWaker;
 
 pub use crate::pac::adc16::vals::ClockDivider;

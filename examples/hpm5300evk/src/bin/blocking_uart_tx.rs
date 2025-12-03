@@ -2,7 +2,7 @@
 #![no_std]
 
 use embedded_hal::delay::DelayNs;
-use embedded_io::Write as _; // `writeln!` provider
+use core::fmt::Write; // for writeln! macro
 use hpm_hal::gpio::{Level, Output, Speed};
 use hpm_hal::uart::UartTx;
 use riscv::delay::McycleDelay;

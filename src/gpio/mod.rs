@@ -596,6 +596,18 @@ impl Pin for AnyPin {}
 /// Placeholder for a signal that is not used.
 pub struct NoPin;
 impl_peripheral!(NoPin);
+
+impl NoPin {
+    /// Get a `Peri<'static, NoPin>` instance.
+    ///
+    /// This is safe because `NoPin` is a zero-sized type with no actual hardware resources.
+    /// Multiple instances don't conflict with each other.
+    #[inline]
+    pub fn peri() -> Peri<'static, Self> {
+        // Safety: NoPin is ZST and has no actual hardware resources.
+        unsafe { Peri::new_unchecked(NoPin) }
+    }
+}
 impl SealedPin for NoPin {
     fn pin_pad(&self) -> u16 {
         0xFFFF
