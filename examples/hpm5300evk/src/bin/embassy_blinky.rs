@@ -14,13 +14,12 @@ const BOARD_NAME: &str = "HPM5300EVK";
 
 #[embassy_executor::task(pool_size = 2)]
 async fn blink(pin: AnyPin) {
-    let mut led = Flex::new(pin);
+    let mut led = Flex::new(unsafe { hal::Peri::new_unchecked(pin) });
     led.set_as_output(Default::default());
     led.set_high();
 
     loop {
         led.toggle();
-
         Timer::after_millis(500).await;
     }
 }
@@ -42,22 +41,17 @@ async fn main(spawner: Spawner) -> ! {
 
     println!("Hello, world!");
 
-    //let mie = riscv::register::mie::read();
-    //println!("mie: {:?}", mie);
-
+    // Test concurrent timers with embassy async
     spawner.spawn(blink(p.PA23.degrade())).unwrap();
     spawner.spawn(blink(p.PA10.degrade())).unwrap();
 
     loop {
         Timer::after_millis(1000).await;
-
-        defmt::info!("tick {}", MCHTMR.mtime().read());
+        defmt::info!("Main loop tick - mtime: 0x{:016X}", MCHTMR.mtime().read());
     }
 }
 
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
-    //let _ = println!("\n\n\n{}", info);
-
     loop {}
 }

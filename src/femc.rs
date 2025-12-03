@@ -6,7 +6,7 @@
 use core::marker::PhantomData;
 use core::mem;
 
-use embassy_hal_internal::Peripheral;
+use embassy_hal_internal::PeripheralType;
 pub use hpm_metapac::femc::vals::{
     Bank2Sel, BurstLen, CasLatency, ColAddrBits, DataSize, Dqs, MemorySize, SdramCmd, SdramPortSize,
 };
@@ -238,11 +238,7 @@ where
         self.check_ip_cmd_done()?;
 
         // read data
-        if !write_data {
-            Ok(r.iprx().read().0)
-        } else {
-            Ok(0)
-        }
+        if !write_data { Ok(r.iprx().read().0) } else { Ok(0) }
     }
 
     pub fn init(&mut self, config: FemcConfig) {

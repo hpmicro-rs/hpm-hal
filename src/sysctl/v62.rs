@@ -4,8 +4,8 @@ use core::ops;
 
 use super::clock_add_to_group;
 use crate::pac;
-pub use crate::pac::sysctl::vals::{ClockMux, SubDiv};
 use crate::pac::SYSCTL;
+pub use crate::pac::sysctl::vals::{ClockMux, SubDiv};
 use crate::time::Hertz;
 
 pub const CLK_32K: Hertz = Hertz(32_768);

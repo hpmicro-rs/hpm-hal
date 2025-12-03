@@ -1,7 +1,7 @@
 [package]
 name = "hpm-hal"
 version = "0.0.1"
-edition = "2021"
+edition = "2024"
 authors = ["Andelf <andelf@gmail.com>"]
 repository = "https://github.com/hpmicro/hpm-hal"
 documentation = "https://docs.rs/hpm-hal"
@@ -13,23 +13,31 @@ readme = "README.md"
 license = "MIT/Apache-2.0"
 
 [dependencies]
-# hpm-metapac = { path = "../hpm-data/build/hpm-metapac" }
-hpm-metapac = { version = "0.0.5", git = "https://github.com/hpmicro-rs/hpm-metapac.git", tag = "hpm-data-caa8fd80439f3ac44e0701c4e6cde71a87128ee6" }
+# local-development
+hpm-metapac = { path = "../hpm-data/build/hpm-metapac" }
+# git snapshot
+# hpm-metapac = { version = "0.0.5", git = "https://github.com/hpmicro-rs/hpm-metapac.git", tag = "hpm-data-caa8fd80439f3ac44e0701c4e6cde71a87128ee6" }
+# crates.io
+# hpm-metapac = { version = "0.0.5" }
 
-hpm-riscv-rt = { version = "0.1.1", optional = true }
+# hpm-riscv-rt = { version = "0.1.2", optional = true }
+# hpm-riscv-rt = { path = "../hpm-riscv-rt", optional = true }
 andes-riscv = { version = "0.1.1" }
-riscv = { version = "0.11", features = ["critical-section-single-hart"] }
+
+riscv = { version = "0.15.0", features = ["critical-section-single-hart"] }
+riscv-rt = { version = "0.16.0", features = ["device", "pre-init"], optional = true }
 
 embedded-hal = { version = "1.0.0" }
-embassy-time-driver = { version = "0.1.0", features = [
+embassy-time-driver = { version = "0.2.1", features = [
     "tick-hz-1_000_000",
 ], optional = true }
 embassy-sync = { version = "0.6.1" }
 embassy-futures = { version = "0.1.1" }
-embassy-hal-internal = { version = "0.2.0", default-features = false }
-embassy-time = { version = "0.3.2", optional = true }
+embassy-hal-internal = { version = "0.3.0", default-features = false }
+embassy-time = { version = "0.5.0", optional = true }
 embassy-usb-driver = { version = "0.1.0" }
 critical-section = "1.1.3"
+embassy-time-queue-utils = { version = "0.3.0", optional = true }
 
 static_assertions = "1"
 
@@ -38,30 +46,31 @@ embedded-io = "0.6.1"
 nb = "1.1.0"
 futures-util = { version = "0.3.30", default-features = false }
 embedded-hal-nb = "1.0.0"
-embedded-io-async = "0.6.1"
+embedded-io-async = "0.7.0"
 embedded-hal-async = "1.0.0"
 chrono = { version = "0.4.38", default-features = false, optional = true }
 mcan = { version = "0.5.0", optional = true }
 embedded-storage = "0.3.1"
-rand_core = "0.6.4"
+rand_core = "0.9.3"
 
 [build-dependencies]
-# hpm-metapac = { path = "../hpm-data/build/hpm-metapac", default-features = false, features = [
-#     "metadata",
-# ] }
-hpm-metapac = { git = "https://github.com/hpmicro-rs/hpm-metapac.git", tag = "hpm-data-caa8fd80439f3ac44e0701c4e6cde71a87128ee6", default-features = false, features = [
+hpm-metapac = { path = "../hpm-data/build/hpm-metapac", default-features = false, features = [
     "metadata",
 ] }
+# hpm-metapac = { git = "https://github.com/hpmicro-rs/hpm-metapac.git", tag = "hpm-data-caa8fd80439f3ac44e0701c4e6cde71a87128ee6", default-features = false, features = [
+#     "metadata",
+# ] }
+
 proc-macro2 = "1.0.92"
 quote = "1.0.37"
 
 [features]
 default = ["rt", "embassy", "time"]
 
-rt = ["dep:hpm-riscv-rt", "hpm-metapac/rt"]
+rt = ["dep:riscv-rt", "hpm-metapac/rt"]
 defmt = ["dep:defmt", "embassy-usb-driver/defmt"]
 time = ["dep:embassy-time"]
-embassy = ["dep:embassy-time-driver"]
+embassy = ["dep:embassy-time-driver", "dep:embassy-time-queue-utils"]
 usb-pin-reuse-hpm5300 = []
 
 mcan = ["dep:mcan"]
@@ -83,15 +92,15 @@ hpm6340 = ["hpm-metapac/hpm6340"]
 hpm6350 = ["hpm-metapac/hpm6350"]
 hpm6360 = ["hpm-metapac/hpm6360"]
 hpm6364 = ["hpm-metapac/hpm6364"]
-hpm6420 = ["hpm-metapac/hpm6420", "hpm-riscv-rt/hpm67-fix"]
-hpm6430 = ["hpm-metapac/hpm6430", "hpm-riscv-rt/hpm67-fix"]
-hpm6450 = ["hpm-metapac/hpm6450", "hpm-riscv-rt/hpm67-fix"]
-hpm6454 = ["hpm-metapac/hpm6454", "hpm-riscv-rt/hpm67-fix"]
-hpm64a0 = ["hpm-metapac/hpm64a0", "hpm-riscv-rt/hpm67-fix"]
-hpm64g0 = ["hpm-metapac/hpm64g0", "hpm-riscv-rt/hpm67-fix"]
-hpm6730 = ["hpm-metapac/hpm6730", "hpm-riscv-rt/hpm67-fix"]
-hpm6750 = ["hpm-metapac/hpm6750", "hpm-riscv-rt/hpm67-fix"]
-hpm6754 = ["hpm-metapac/hpm6754", "hpm-riscv-rt/hpm67-fix"]
+# hpm6420 = ["hpm-metapac/hpm6420", "hpm-riscv-rt/hpm67-fix"]
+# hpm6430 = ["hpm-metapac/hpm6430", "hpm-riscv-rt/hpm67-fix"]
+# hpm6450 = ["hpm-metapac/hpm6450", "hpm-riscv-rt/hpm67-fix"]
+# hpm6454 = ["hpm-metapac/hpm6454", "hpm-riscv-rt/hpm67-fix"]
+# hpm64a0 = ["hpm-metapac/hpm64a0", "hpm-riscv-rt/hpm67-fix"]
+# hpm64g0 = ["hpm-metapac/hpm64g0", "hpm-riscv-rt/hpm67-fix"]
+# hpm6730 = ["hpm-metapac/hpm6730", "hpm-riscv-rt/hpm67-fix"]
+# hpm6750 = ["hpm-metapac/hpm6750", "hpm-riscv-rt/hpm67-fix"]
+# hpm6754 = ["hpm-metapac/hpm6754", "hpm-riscv-rt/hpm67-fix"]
 hpm6830 = ["hpm-metapac/hpm6830", "mcan"]
 hpm6850 = ["hpm-metapac/hpm6850", "mcan"]
 hpm6880 = ["hpm-metapac/hpm6880", "mcan"]

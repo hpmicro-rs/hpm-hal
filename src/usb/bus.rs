@@ -8,8 +8,8 @@ use embedded_hal::delay::DelayNs;
 use hpm_metapac::usb::regs::*;
 use riscv::delay::McycleDelay;
 
-use super::{init_qhd, Instance, ENDPOINT_COUNT, EP_IN_WAKERS, EP_OUT_WAKERS};
-use crate::usb::{reset_dcd_data, EpConfig, BUS_WAKER, DCD_DATA, IRQ_RESET, IRQ_SUSPEND};
+use super::{ENDPOINT_COUNT, EP_IN_WAKERS, EP_OUT_WAKERS, Instance, init_qhd};
+use crate::usb::{BUS_WAKER, DCD_DATA, EpConfig, IRQ_RESET, IRQ_SUSPEND, reset_dcd_data};
 
 /// USB bus
 pub struct Bus<T: Instance> {

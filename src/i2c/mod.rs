@@ -5,7 +5,7 @@ use core::marker::PhantomData;
 use core::task::Poll;
 
 use embassy_hal_internal::drop::OnDrop;
-use embassy_hal_internal::{into_ref, Peripheral, PeripheralRef};
+use embassy_hal_internal::{Peri, PeripheralType};
 use embassy_sync::waitqueue::AtomicWaker;
 use embedded_hal::i2c::Operation;
 use futures_util::future::poll_fn;
@@ -129,8 +129,8 @@ pub struct I2c<'d, M: Mode> {
     info: &'static Info,
     state: &'static State,
     kernel_clock: Hertz,
-    scl: Option<PeripheralRef<'d, AnyPin>>,
-    sda: Option<PeripheralRef<'d, AnyPin>>,
+    scl: Option<Peri<'d, AnyPin>>,
+    sda: Option<Peri<'d, AnyPin>>,
     dma: Option<ChannelAndRequest<'d>>,
     #[cfg(feature = "time")]
     timeout: embassy_time::Duration,
@@ -140,13 +140,11 @@ pub struct I2c<'d, M: Mode> {
 impl<'d> I2c<'d, Blocking> {
     /// Create a new blocking I2C driver.
     pub fn new_blocking<T: Instance>(
-        peri: impl Peripheral<P = T> + 'd,
-        scl: impl Peripheral<P = impl SclPin<T>> + 'd,
-        sda: impl Peripheral<P = impl SdaPin<T>> + 'd,
+        peri: Peri<'d, T>,
+        scl: Peri<'d, impl SclPin<T>>,
+        sda: Peri<'d, impl SdaPin<T>>,
         config: Config,
     ) -> Self {
-        into_ref!(scl, sda);
-
         scl.set_as_ioc_gpio();
         sda.set_as_ioc_gpio();
 
@@ -210,22 +208,20 @@ impl<'d> I2c<'d, Blocking> {
             T::set_clock(ClockConfig::new(ClockMux::CLK_24M, 1));
         }
 
-        Self::new_inner(peri, Some(scl.map_into()), Some(sda.map_into()), None, config)
+        Self::new_inner(peri, Some(scl.into()), Some(sda.into()), None, config)
     }
 }
 
 impl<'d> I2c<'d, Async> {
     /// Create a new async I2C driver.
     pub fn new<T: Instance>(
-        peri: impl Peripheral<P = T> + 'd,
-        scl: impl Peripheral<P = impl SclPin<T>> + 'd,
-        sda: impl Peripheral<P = impl SdaPin<T>> + 'd,
+        peri: Peri<'d, T>,
+        scl: Peri<'d, impl SclPin<T>>,
+        sda: Peri<'d, impl SdaPin<T>>,
         _irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'd,
-        dma: impl Peripheral<P = impl I2cDma<T>> + 'd,
+        dma: Peri<'d, impl I2cDma<T>>,
         config: Config,
     ) -> Self {
-        into_ref!(scl, sda);
-
         scl.set_as_ioc_gpio();
         sda.set_as_ioc_gpio();
 
@@ -288,7 +284,7 @@ impl<'d> I2c<'d, Async> {
             T::set_clock(ClockConfig::new(ClockMux::CLK_24M, 1));
         }
 
-        Self::new_inner(peri, Some(scl.map_into()), Some(sda.map_into()), new_dma!(dma), config)
+        Self::new_inner(peri, Some(scl.into()), Some(sda.into()), new_dma!(dma), config)
     }
 
     /// Write.
@@ -489,9 +485,9 @@ impl<'d> I2c<'d, Async> {
 impl<'d, M: Mode> I2c<'d, M> {
     /// Create a new I2C driver.
     fn new_inner<T: Instance>(
-        _peri: impl Peripheral<P = T> + 'd,
-        scl: Option<PeripheralRef<'d, AnyPin>>,
-        sda: Option<PeripheralRef<'d, AnyPin>>,
+        _peri: Peri<'d, T>,
+        scl: Option<Peri<'d, AnyPin>>,
+        sda: Option<Peri<'d, AnyPin>>,
         dma: Option<ChannelAndRequest<'d>>,
         config: Config,
     ) -> Self {

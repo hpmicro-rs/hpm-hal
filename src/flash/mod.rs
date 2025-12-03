@@ -2,7 +2,7 @@
 
 use core::marker::PhantomData;
 
-use embassy_hal_internal::{into_ref, Peripheral};
+use embassy_hal_internal::{Peri, PeripheralType};
 use embedded_storage::nor_flash::NorFlashErrorKind;
 use romapi::{
     xpi_nor_config_option_t, xpi_nor_config_t, xpi_nor_property_sector_size, xpi_nor_property_total_size,
@@ -56,8 +56,7 @@ pub struct Config {
 
 impl Config {
     /// Load config from ROM data.
-    pub fn from_rom_data<T: Instance>(xpi: impl Peripheral<P = T>) -> Option<Self> {
-        into_ref!(xpi);
+    pub fn from_rom_data<T: Instance + PeripheralType>(xpi: Peri<'_, T>) -> Option<Self> {
         let _ = xpi;
 
         const NOR_CFG_OPT_TAG: u32 = 0xfcf90_000;
@@ -90,7 +89,7 @@ pub struct Flash<'d, T: Instance, const FLASH_SIZE: usize> {
 }
 
 impl<'d, T: Instance, const FLASH_SIZE: usize> Flash<'d, T, FLASH_SIZE> {
-    pub fn new(_periph: impl Peripheral<P = T> + 'd, config: Config) -> Result<Self, Error> {
+    pub fn new(_periph: impl PeripheralType, config: Config) -> Result<Self, Error> {
         let option: xpi_nor_config_option_t = xpi_nor_config_option_t {
             header: config.header,
             option0: config.option0,

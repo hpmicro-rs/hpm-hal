@@ -7,7 +7,7 @@ use core::future;
 use core::marker::PhantomData;
 use core::task::Poll;
 
-use embassy_hal_internal::Peripheral;
+use embassy_hal_internal::{Peri, PeripheralType};
 use embassy_sync::waitqueue::AtomicWaker;
 use futures_util::stream;
 
@@ -68,7 +68,7 @@ pub struct Mbx<'d> {
 
 impl<'d> Mbx<'d> {
     pub fn new<T: Instance>(
-        _peri: impl Peripheral<P = T> + 'd,
+        _peri: Peri<'d, T>,
         _irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'd,
     ) -> Self {
         T::info().regs.cr().modify(|w| w.set_txreset(true));

@@ -8,7 +8,7 @@
 use core::marker::PhantomData;
 use core::ops;
 
-use embassy_hal_internal::{into_ref, Peripheral};
+use embassy_hal_internal::{Peri, PeripheralType};
 use embassy_sync::waitqueue::AtomicWaker;
 use hpm_metapac::dac::vals::{BufDataMode, DacMode};
 
@@ -239,12 +239,11 @@ impl<'d, M: Mode> Dac<'d, M> {
 }
 
 impl<'d> Dac<'d, Direct> {
-    pub fn new_direct<T: Instance>(
-        dac: impl Peripheral<P = T> + 'd,
-        out: impl Peripheral<P = impl OutPin<T>> + 'd,
+    pub fn new_direct<T: Instance + PeripheralType>(
+        dac: Peri<'d, T>,
+        out: Peri<'d, impl OutPin<T>>,
         config: Config,
     ) -> Self {
-        into_ref!(dac, out);
         let _ = dac;
 
         out.set_as_analog();
@@ -284,12 +283,11 @@ impl<'d> Dac<'d, Direct> {
 }
 
 impl<'d> Dac<'d, Step> {
-    pub fn new_step<T: Instance>(
-        dac: impl Peripheral<P = T> + 'd,
-        out: impl Peripheral<P = impl OutPin<T>> + 'd,
+    pub fn new_step<T: Instance + PeripheralType>(
+        dac: Peri<'d, T>,
+        out: Peri<'d, impl OutPin<T>>,
         config: Config,
     ) -> Self {
-        into_ref!(dac, out);
         let _ = dac;
 
         out.set_as_analog();
@@ -336,14 +334,13 @@ impl<'d> Dac<'d, Step> {
 }
 
 impl<'d> Dac<'d, Buffered> {
-    pub fn new_buffered<T: Instance>(
-        dac: impl Peripheral<P = T> + 'd,
-        out: impl Peripheral<P = impl OutPin<T>> + 'd,
+    pub fn new_buffered<T: Instance + PeripheralType>(
+        dac: Peri<'d, T>,
+        out: Peri<'d, impl OutPin<T>>,
         _irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'd,
         // dma: impl Peripheral<P = impl DacDma<T>> + 'd,
         config: Config,
     ) -> Self {
-        into_ref!(dac, out);
         let _ = dac;
 
         out.set_as_analog();

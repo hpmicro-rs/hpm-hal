@@ -14,7 +14,7 @@
 use core::marker::PhantomData;
 use core::ops;
 
-use embassy_hal_internal::{into_ref, Peripheral, PeripheralRef};
+use embassy_hal_internal::{Peri, PeripheralType};
 use embassy_sync::waitqueue::AtomicWaker;
 
 pub use crate::pac::adc16::vals::ClockDivider;
@@ -95,13 +95,11 @@ impl Default for PeriodicConfig {
 /// Analog to Digital driver.
 pub struct Adc<'d, T: Instance> {
     #[allow(unused)]
-    adc: PeripheralRef<'d, T>,
+    adc: Peri<'d, T>,
 }
 
 impl<'d, T: Instance> Adc<'d, T> {
-    pub fn new(adc: impl Peripheral<P = T> + 'd, config: Config) -> Self {
-        into_ref!(adc);
-
+    pub fn new(adc: Peri<'d, T>, config: Config) -> Self {
         T::add_resource_group(0);
 
         let r = T::regs();
@@ -353,7 +351,7 @@ trait SealedInstance {
 
 /// ADC instance.
 #[allow(private_bounds)]
-pub trait Instance: SealedInstance + crate::Peripheral<P = Self> + crate::sysctl::AnalogClockPeripheral {
+pub trait Instance: SealedInstance + crate::PeripheralType + crate::sysctl::AnalogClockPeripheral {
     type Interrupt: crate::interrupt::typelevel::Interrupt;
 }
 

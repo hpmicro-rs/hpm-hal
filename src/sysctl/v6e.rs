@@ -1,6 +1,6 @@
 //! System control, clocks, group links.
 
-use super::{clock_add_to_group, Pll};
+use super::{Pll, clock_add_to_group};
 use crate::pac;
 pub use crate::pac::sysctl::vals::ClockMux;
 use crate::pac::{PLLCTL, SYSCTL};
