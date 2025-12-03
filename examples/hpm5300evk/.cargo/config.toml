@@ -8,8 +8,8 @@ runner = [
     "run",
     "--chip",
     "HPM5361",
-    "--chip-description-path",
-    "../../HPMicro.yaml",
+#    "--chip-description-path",
+#    "../../HPMicro.yaml",
     "--protocol",
     "jtag",
     "--log-format",
@@ -20,7 +20,7 @@ rustflags = [
     # Target features:
     # The default for imacf is is "+m,+a,+c,+f"
     "-C",
-    "target-feature=+zba,+zbb,+zbc,+zbs,+d",
+    "target-feature=+zba,+zbb,+zbc,+zbs",
     # Linker scripts:
     "-C",
     "link-arg=-Tmemory.x",

@@ -1,7 +1,7 @@
 use core::future::Future;
 use core::task::{Context, Poll};
 
-use embassy_hal_internal::{Peripheral, PeripheralRef};
+use embassy_hal_internal::Peri;
 use embassy_sync::waitqueue::AtomicWaker;
 
 use super::{AnyPin, Flex, Input, Pin as GpioPin, SealedPin};
@@ -23,14 +23,12 @@ pub(crate) unsafe fn on_interrupt(r: crate::pac::gpio::Gpio, port: usize) {
 }
 
 pub(crate) struct InputFuture<'a> {
-    pin: PeripheralRef<'a, AnyPin>,
+    pin: Peri<'a, AnyPin>,
 }
 
 impl<'a> InputFuture<'a> {
-    fn new(pin: impl Peripheral<P = impl GpioPin> + 'a) -> Self {
-        Self {
-            pin: pin.into_ref().map_into(),
-        }
+    fn new(pin: Peri<'a, AnyPin>) -> Self {
+        Self { pin: pin }
     }
 }
 
@@ -105,7 +103,7 @@ impl<'d> Flex<'d> {
             .ie(self.pin._port())
             .set()
             .write(|w| w.set_irq_en(1 << self.pin._pin()));
-        InputFuture::new(&mut self.pin).await
+        InputFuture::new(self.pin.reborrow()).await
     }
 
     pub async fn wait_for_low(&mut self) {
@@ -124,7 +122,7 @@ impl<'d> Flex<'d> {
             .ie(self.pin._port())
             .set()
             .write(|w| w.set_irq_en(1 << self.pin._pin()));
-        InputFuture::new(&mut self.pin).await
+        InputFuture::new(self.pin.reborrow()).await
     }
 
     pub async fn wait_for_rising_edge(&mut self) {
@@ -149,7 +147,7 @@ impl<'d> Flex<'d> {
             .ie(self.pin._port())
             .set()
             .write(|w| w.set_irq_en(1 << self.pin._pin()));
-        InputFuture::new(&mut self.pin).await
+        InputFuture::new(self.pin.reborrow()).await
     }
 
     pub async fn wait_for_falling_edge(&mut self) {
@@ -176,7 +174,7 @@ impl<'d> Flex<'d> {
             .ie(self.pin._port())
             .set()
             .write(|w| w.set_irq_en(1 << self.pin._pin()));
-        InputFuture::new(&mut self.pin).await
+        InputFuture::new(self.pin.reborrow()).await
     }
 
     /// Affects whole port
@@ -197,6 +195,6 @@ impl<'d> Flex<'d> {
             .ie(self.pin._port())
             .set()
             .write(|w| w.set_irq_en(1 << self.pin._pin()));
-        InputFuture::new(&mut self.pin).await
+        InputFuture::new(self.pin.reborrow()).await
     }
 }

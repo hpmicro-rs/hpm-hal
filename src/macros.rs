@@ -15,7 +15,7 @@ macro_rules! peri_trait {
 
         /// Peripheral instance trait.
         #[allow(private_bounds)]
-        pub trait Instance: crate::Peripheral<P = Self> + SealedInstance + crate::sysctl::ClockPeripheral {
+        pub trait Instance: crate::PeripheralType + SealedInstance + crate::sysctl::ClockPeripheral {
             $($(
                 /// Interrupt for this peripheral.
                 type $irq: crate::interrupt::typelevel::Interrupt;
@@ -38,7 +38,7 @@ macro_rules! peri_trait_without_sysclk {
 
         /// Peripheral instance trait.
         #[allow(private_bounds)]
-        pub trait Instance: crate::Peripheral<P = Self> + SealedInstance {
+        pub trait Instance: crate::PeripheralType + SealedInstance {
             $($(
                 /// Interrupt for this peripheral.
                 type $irq: crate::interrupt::typelevel::Interrupt;
@@ -139,10 +139,9 @@ macro_rules! dma_trait_impl {
 
 macro_rules! new_dma {
     ($name:ident) => {{
-        let dma = $name.into_ref();
-        let request = dma.request();
+        let request = $name.request();
         Some(crate::dma::ChannelAndRequest {
-            channel: dma.map_into(),
+            channel: $name.into(),
             request,
         })
     }};

@@ -1,4 +1,4 @@
-use embassy_hal_internal::PeripheralRef;
+use embassy_hal_internal::Peri;
 
 use super::word::Word;
 use super::{AnyChannel, Request, Transfer, TransferOptions};
@@ -7,7 +7,7 @@ use super::{AnyChannel, Request, Transfer, TransferOptions};
 ///
 /// Commonly used in peripheral drivers that own DMA channels.
 pub(crate) struct ChannelAndRequest<'d> {
-    pub channel: PeripheralRef<'d, AnyChannel>,
+    pub channel: Peri<'d, AnyChannel>,
     pub request: Request,
 }
 
@@ -18,7 +18,7 @@ impl<'d> ChannelAndRequest<'d> {
         buf: &'a mut [W],
         options: TransferOptions,
     ) -> Transfer<'a> {
-        Transfer::new_read(&mut self.channel, self.request, peri_addr, buf, options)
+        Transfer::new_read(self.channel.clone_unchecked(), self.request, peri_addr, buf, options)
     }
 
     pub unsafe fn read_raw<'a, W: Word>(
@@ -27,7 +27,7 @@ impl<'d> ChannelAndRequest<'d> {
         buf: *mut [W],
         options: TransferOptions,
     ) -> Transfer<'a> {
-        Transfer::new_read_raw(&mut self.channel, self.request, peri_addr, buf, options)
+        Transfer::new_read_raw(self.channel.clone_unchecked(), self.request, peri_addr, buf, options)
     }
 
     pub unsafe fn write<'a, W: Word>(
@@ -36,7 +36,7 @@ impl<'d> ChannelAndRequest<'d> {
         peri_addr: *mut W,
         options: TransferOptions,
     ) -> Transfer<'a> {
-        Transfer::new_write(&mut self.channel, self.request, buf, peri_addr, options)
+        Transfer::new_write(self.channel.clone_unchecked(), self.request, buf, peri_addr, options)
     }
 
     pub unsafe fn write_raw<'a, W: Word>(
@@ -45,7 +45,7 @@ impl<'d> ChannelAndRequest<'d> {
         peri_addr: *mut W,
         options: TransferOptions,
     ) -> Transfer<'a> {
-        Transfer::new_write_raw(&mut self.channel, self.request, buf, peri_addr, options)
+        Transfer::new_write_raw(self.channel.clone_unchecked(), self.request, buf, peri_addr, options)
     }
 
     #[allow(dead_code)]
@@ -56,6 +56,13 @@ impl<'d> ChannelAndRequest<'d> {
         peri_addr: *mut W,
         options: TransferOptions,
     ) -> Transfer<'a> {
-        Transfer::new_write_repeated(&mut self.channel, self.request, repeated, count, peri_addr, options)
+        Transfer::new_write_repeated(
+            self.channel.clone_unchecked(),
+            self.request,
+            repeated,
+            count,
+            peri_addr,
+            options,
+        )
     }
 }

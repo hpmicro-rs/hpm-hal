@@ -2,27 +2,25 @@
 //!
 // QEIv1 does not have any physical pins. All signals come from TRGM.
 
-use embassy_hal_internal::{into_ref, Peripheral, PeripheralRef};
+use embassy_hal_internal::{Peri, PeripheralType};
 
 use crate::pac;
 
 #[allow(unused)]
-pub struct Qei<'d, T: Instance> {
-    _peri: PeripheralRef<'d, T>,
+pub struct Qei<'d, T: Instance + PeripheralType> {
+    _peri: Peri<'d, T>,
 }
 
-impl<'d, T: Instance> Qei<'d, T> {
+impl<'d, T: Instance + PeripheralType> Qei<'d, T> {
     pub fn new_uninited(
-        peri: impl Peripheral<P = T> + 'd,
-        a: impl Peripheral<P = impl APin<T>> + 'd,
-        b: impl Peripheral<P = impl BPin<T>> + 'd,
-        z: impl Peripheral<P = impl ZPin<T>> + 'd,
-        fault: impl Peripheral<P = impl FaultPin<T>> + 'd,
-        home0: impl Peripheral<P = impl Home0Pin<T>> + 'd,
-        home1: impl Peripheral<P = impl Home1Pin<T>> + 'd,
+        peri: Peri<'d, T>,
+        a: Peri<'d, impl APin<T>>,
+        b: Peri<'d, impl BPin<T>>,
+        z: Peri<'d, impl ZPin<T>>,
+        fault: Peri<'d, impl FaultPin<T>>,
+        home0: Peri<'d, impl Home0Pin<T>>,
+        home1: Peri<'d, impl Home1Pin<T>>,
     ) -> Qei<'d, T> {
-        into_ref!(peri, a, b, z, fault, home0, home1);
-
         T::add_resource_group(0);
 
         a.set_as_alt(a.alt_num());

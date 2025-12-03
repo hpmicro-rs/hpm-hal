@@ -1,6 +1,6 @@
 use super::*;
-use crate::pac::sysctl::vals::AnaClkMux;
 use crate::pac::SYSCTL;
+use crate::pac::sysctl::vals::AnaClkMux;
 use crate::peripherals;
 
 // ANA clock structure of HPM67 is different from others

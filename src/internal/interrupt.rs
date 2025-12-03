@@ -1,12 +1,11 @@
-use core::iter::Product;
 use core::mem;
-use core::sync::atomic::{compiler_fence, Ordering};
+use core::sync::atomic::{Ordering, compiler_fence};
 
 use critical_section::CriticalSection;
+use riscv_rt::InterruptNumber;
 
 use crate::pac;
-use crate::pac::{PLIC};
-use riscv_rt::InterruptNumber;
+use crate::pac::PLIC;
 
 /// Generate a standard `mod interrupt` for a HAL.
 #[macro_export]

@@ -4,8 +4,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use bus::Bus;
 use control_pipe::ControlPipe;
 #[cfg(feature = "usb-pin-reuse-hpm5300")]
-use embassy_hal_internal::into_ref;
-use embassy_hal_internal::Peripheral;
+use embassy_hal_internal::{Peri, PeripheralType};
 use embassy_sync::waitqueue::AtomicWaker;
 use embassy_usb_driver::{Direction, Driver, EndpointAddress, EndpointAllocError, EndpointInfo, EndpointType};
 use embedded_hal::delay::DelayNs;
@@ -225,9 +224,9 @@ pub struct UsbDriver<'d, T: Instance> {
 
 impl<'d, T: Instance> UsbDriver<'d, T> {
     pub fn new(
-        _peri: impl Peripheral<P = T> + 'd,
-        #[cfg(feature = "usb-pin-reuse-hpm5300")] dm: impl Peripheral<P = impl DmPin<T>> + 'd,
-        #[cfg(feature = "usb-pin-reuse-hpm5300")] dp: impl Peripheral<P = impl DpPin<T>> + 'd,
+        _peri: Peri<'d, T>,
+        #[cfg(feature = "usb-pin-reuse-hpm5300")] dm: Peri<'d, impl DmPin<T>>,
+        #[cfg(feature = "usb-pin-reuse-hpm5300")] dp: Peri<'d, impl DpPin<T>>,
     ) -> Self {
         unsafe { T::Interrupt::enable() };
 
@@ -240,8 +239,6 @@ impl<'d, T: Instance> UsbDriver<'d, T> {
 
         #[cfg(feature = "usb-pin-reuse-hpm5300")]
         {
-            into_ref!(dp, dm);
-
             // Set to analog
             dp.set_as_analog();
             dm.set_as_analog();

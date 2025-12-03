@@ -7,10 +7,10 @@ pub(crate) mod internal;
 // macro must come first
 include!(concat!(env!("OUT_DIR"), "/_macros.rs"));
 
-pub use embassy_hal_internal::{into_ref, Peripheral, PeripheralRef};
+pub use embassy_hal_internal::{Peri, PeripheralType};
 pub use hpm_metapac as pac;
 
-pub use self::_generated::{peripherals, Peripherals};
+pub use self::_generated::{Peripherals, peripherals};
 
 mod macros;
 pub mod time;
@@ -181,7 +181,6 @@ pub fn init(config: Config) -> Peripherals {
 pub unsafe fn uninited() -> Peripherals {
     Peripherals::take()
 }
-
 
 #[cfg(feature = "rt")]
 core::arch::global_asm!(

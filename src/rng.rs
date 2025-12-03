@@ -7,7 +7,7 @@
 //!
 
 use embassy_futures::yield_now;
-use embassy_hal_internal::{into_ref, Peripheral, PeripheralRef};
+use embassy_hal_internal::{Peri, PeripheralType};
 use rand_core::{CryptoRng, RngCore};
 
 use crate::pac;
@@ -23,14 +23,12 @@ pub enum Error {
 }
 
 #[allow(unused)]
-pub struct Rng<'d, T: Instance> {
-    _peri: PeripheralRef<'d, T>,
+pub struct Rng<'d, T: Instance + PeripheralType> {
+    _peri: Peri<'d, T>,
 }
 
-impl<'d, T: Instance> Rng<'d, T> {
-    pub fn new(peri: impl Peripheral<P = T> + 'd) -> Result<Rng<'d, T>, Error> {
-        into_ref!(peri);
-
+impl<'d, T: Instance + PeripheralType> Rng<'d, T> {
+    pub fn new(peri: Peri<'d, T>) -> Result<Rng<'d, T>, Error> {
         T::add_resource_group(0);
 
         let mut this = Rng { _peri: peri };
@@ -113,7 +111,7 @@ impl<'d, T: Instance> Rng<'d, T> {
     }
 }
 
-impl<'d, T: Instance> RngCore for Rng<'d, T> {
+impl<'d, T: Instance + PeripheralType> RngCore for Rng<'d, T> {
     fn next_u32(&mut self) -> u32 {
         while T::regs().sta().read().busy() {}
         T::regs().fo2b().read().0
@@ -140,7 +138,7 @@ impl<'d, T: Instance> RngCore for Rng<'d, T> {
     }
 }
 
-impl<'d, T: Instance> CryptoRng for Rng<'d, T> {}
+impl<'d, T: Instance + PeripheralType> CryptoRng for Rng<'d, T> {}
 
 pub(crate) trait SealedInstance {
     fn regs() -> pac::rng::Rng;

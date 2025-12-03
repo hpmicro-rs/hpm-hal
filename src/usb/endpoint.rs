@@ -5,7 +5,7 @@ use core::task::Poll;
 use embassy_usb_driver::{EndpointAddress, EndpointIn, EndpointInfo, EndpointOut};
 
 use super::{DCD_DATA, QTD_COUNT_EACH_QHD};
-use crate::usb::{Instance, EP_IN_WAKERS, EP_OUT_WAKERS};
+use crate::usb::{EP_IN_WAKERS, EP_OUT_WAKERS, Instance};
 
 pub(crate) struct EpConfig {
     /// Endpoint type

@@ -6,19 +6,17 @@
 //! - Invetion, edge to pluse convertion
 //! - DMA request generation: PWMT, QDEC, HALL
 
-use embassy_hal_internal::{into_ref, Peripheral, PeripheralRef};
+use embassy_hal_internal::{Peri, PeripheralType};
 
 use crate::pac;
 
 #[allow(unused)]
-pub struct Trgm<'d, T: Instance> {
-    _peri: PeripheralRef<'d, T>,
+pub struct Trgm<'d, T: Instance + PeripheralType> {
+    _peri: Peri<'d, T>,
 }
 
-impl<'d, T: Instance> Trgm<'d, T> {
-    pub fn new_uninited(peri: impl Peripheral<P = T> + 'd) -> Trgm<'d, T> {
-        into_ref!(peri);
-
+impl<'d, T: Instance + PeripheralType> Trgm<'d, T> {
+    pub fn new_uninited(peri: Peri<'d, T>) -> Trgm<'d, T> {
         Trgm { _peri: peri }
     }
 
@@ -26,8 +24,6 @@ impl<'d, T: Instance> Trgm<'d, T> {
         T::REGS
     }
 }
-
-impl<'d, T: Instance> Trgm<'d, T> {}
 
 pub(crate) trait SealedInstance {
     const REGS: crate::pac::trgm::Trgm;

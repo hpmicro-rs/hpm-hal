@@ -2,7 +2,7 @@
 
 use core::ops;
 
-use super::{clock_add_to_group, Pll};
+use super::{Pll, clock_add_to_group};
 use crate::pac;
 pub use crate::pac::sysctl::vals::{ClockMux, SubDiv as AHBDiv};
 use crate::pac::{PLLCTL, SYSCTL};

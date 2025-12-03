@@ -10,13 +10,13 @@ use core::ptr;
 
 use embassy_futures::join::join;
 use embassy_futures::yield_now;
-use embassy_hal_internal::{into_ref, Peripheral, PeripheralRef};
+use embassy_hal_internal::{Peri, PeripheralType};
 use embassy_sync::waitqueue::AtomicWaker;
 // re-export
-pub use embedded_hal::spi::{Mode, MODE_0, MODE_1, MODE_2, MODE_3};
+pub use embedded_hal::spi::{MODE_0, MODE_1, MODE_2, MODE_3, Mode};
 
 use self::consts::*;
-use crate::dma::{self, word, ChannelAndRequest};
+use crate::dma::{self, ChannelAndRequest, word};
 use crate::gpio::AnyPin;
 use crate::mode::{Async, Blocking, Mode as PeriMode};
 pub use crate::pac::spi::vals::{AddrLen, AddrPhaseFormat, DataPhaseFormat, TransMode};
@@ -212,11 +212,11 @@ pub struct Spi<'d, M: PeriMode> {
     info: &'static Info,
     state: &'static State,
     kernel_clock: Hertz,
-    sclk: Option<PeripheralRef<'d, AnyPin>>,
-    mosi: Option<PeripheralRef<'d, AnyPin>>,
-    miso: Option<PeripheralRef<'d, AnyPin>>,
-    d2: Option<PeripheralRef<'d, AnyPin>>,
-    d3: Option<PeripheralRef<'d, AnyPin>>,
+    sclk: Option<Peri<'d, AnyPin>>,
+    mosi: Option<Peri<'d, AnyPin>>,
+    miso: Option<Peri<'d, AnyPin>>,
+    d2: Option<Peri<'d, AnyPin>>,
+    d3: Option<Peri<'d, AnyPin>>,
     tx_dma: Option<ChannelAndRequest<'d>>,
     rx_dma: Option<ChannelAndRequest<'d>>,
     _phantom: PhantomData<M>,
@@ -226,13 +226,12 @@ pub struct Spi<'d, M: PeriMode> {
 impl<'d> Spi<'d, Blocking> {
     /// Create a new blocking SPI driver.
     pub fn new_blocking<T: Instance>(
-        peri: impl Peripheral<P = T> + 'd,
-        sclk: impl Peripheral<P = impl SclkPin<T>> + 'd,
-        mosi: impl Peripheral<P = impl MosiPin<T>> + 'd,
-        miso: impl Peripheral<P = impl MisoPin<T>> + 'd,
+        peri: Peri<'d, T>,
+        sclk: Peri<'d, impl SclkPin<T>>,
+        mosi: Peri<'d, impl MosiPin<T>>,
+        miso: Peri<'d, impl MisoPin<T>>,
         config: Config,
     ) -> Self {
-        into_ref!(sclk, mosi, miso);
 
         T::add_resource_group(0);
 
@@ -245,9 +244,9 @@ impl<'d> Spi<'d, Blocking> {
 
         Self::new_inner(
             peri,
-            Some(sclk.map_into()),
-            Some(mosi.map_into()),
-            Some(miso.map_into()),
+            Some(sclk.into()),
+            Some(mosi.into()),
+            Some(miso.into()),
             None,
             None,
             None,
@@ -257,12 +256,11 @@ impl<'d> Spi<'d, Blocking> {
     }
 
     pub fn new_blocking_half_duplex<T: Instance>(
-        peri: impl Peripheral<P = T> + 'd,
-        sclk: impl Peripheral<P = impl SclkPin<T>> + 'd,
-        mosi: impl Peripheral<P = impl MosiPin<T>> + 'd,
+        peri: Peri<'d, T>,
+        sclk: Peri<'d, impl SclkPin<T>>,
+        mosi: Peri<'d, impl MosiPin<T>>,
         mut config: Config,
     ) -> Self {
-        into_ref!(sclk, mosi);
 
         T::add_resource_group(0);
 
@@ -275,8 +273,8 @@ impl<'d> Spi<'d, Blocking> {
 
         Self::new_inner(
             peri,
-            Some(sclk.map_into()),
-            Some(mosi.map_into()),
+            Some(sclk.into()),
+            Some(mosi.into()),
             None,
             None,
             None,
@@ -287,12 +285,11 @@ impl<'d> Spi<'d, Blocking> {
     }
 
     pub fn new_blocking_rxonly<T: Instance>(
-        peri: impl Peripheral<P = T> + 'd,
-        sclk: impl Peripheral<P = impl SclkPin<T>> + 'd,
-        miso: impl Peripheral<P = impl MisoPin<T>> + 'd,
+        peri: Peri<'d, T>,
+        sclk: Peri<'d, impl SclkPin<T>>,
+        miso: Peri<'d, impl MisoPin<T>>,
         config: Config,
     ) -> Self {
-        into_ref!(sclk, miso);
 
         T::add_resource_group(0);
 
@@ -304,9 +301,9 @@ impl<'d> Spi<'d, Blocking> {
 
         Self::new_inner(
             peri,
-            Some(sclk.map_into()),
+            Some(sclk.into()),
             None,
-            Some(miso.map_into()),
+            Some(miso.into()),
             None,
             None,
             None,
@@ -317,12 +314,11 @@ impl<'d> Spi<'d, Blocking> {
 
     /// Create a new blocking SPI driver, in TX-only mode (only MOSI pin, no MISO).
     pub fn new_blocking_txonly<T: Instance>(
-        peri: impl Peripheral<P = T> + 'd,
-        sclk: impl Peripheral<P = impl SclkPin<T>> + 'd,
-        mosi: impl Peripheral<P = impl MosiPin<T>> + 'd,
+        peri: Peri<'d, T>,
+        sclk: Peri<'d, impl SclkPin<T>>,
+        mosi: Peri<'d, impl MosiPin<T>>,
         config: Config,
     ) -> Self {
-        into_ref!(sclk, mosi);
 
         T::add_resource_group(0);
 
@@ -334,8 +330,8 @@ impl<'d> Spi<'d, Blocking> {
 
         Self::new_inner(
             peri,
-            Some(sclk.map_into()),
-            Some(mosi.map_into()),
+            Some(sclk.into()),
+            Some(mosi.into()),
             None,
             None,
             None,
@@ -347,30 +343,27 @@ impl<'d> Spi<'d, Blocking> {
 
     /// Create a new SPI driver, in TX-only mode, without SCK pin.
     pub fn new_blocking_txonly_nosck<T: Instance>(
-        peri: impl Peripheral<P = T> + 'd,
-        mosi: impl Peripheral<P = impl MosiPin<T>> + 'd,
+        peri: Peri<'d, T>,
+        mosi: Peri<'d, impl MosiPin<T>>,
         config: Config,
     ) -> Self {
-        into_ref!(mosi);
-
         T::add_resource_group(0);
 
         mosi.set_as_alt(mosi.alt_num());
 
-        Self::new_inner(peri, None, Some(mosi.map_into()), None, None, None, None, None, config)
+        Self::new_inner(peri, None, Some(mosi.into()), None, None, None, None, None, config)
     }
 
     pub fn new_blocking_quad<T: Instance>(
-        peri: impl Peripheral<P = T> + 'd,
-        cs: impl Peripheral<P = impl CsPin<T> + CsIndexPin<T>> + 'd,
-        sclk: impl Peripheral<P = impl SclkPin<T>> + 'd,
-        mosi: impl Peripheral<P = impl MosiPin<T>> + 'd,
-        miso: impl Peripheral<P = impl MisoPin<T>> + 'd,
-        d2: impl Peripheral<P = impl D2Pin<T>> + 'd,
-        d3: impl Peripheral<P = impl D3Pin<T>> + 'd,
+        peri: Peri<'d, T>,
+        cs: Peri<'d, impl CsPin<T> + CsIndexPin<T>>,
+        sclk: Peri<'d, impl SclkPin<T>>,
+        mosi: Peri<'d, impl MosiPin<T>>,
+        miso: Peri<'d, impl MisoPin<T>>,
+        d2: Peri<'d, impl D2Pin<T>>,
+        d3: Peri<'d, impl D3Pin<T>>,
         config: Config,
     ) -> Self {
-        into_ref!(cs, sclk, mosi, miso, d2, d3);
 
         T::add_resource_group(0);
 
@@ -392,11 +385,11 @@ impl<'d> Spi<'d, Blocking> {
 
         Self::new_inner(
             peri,
-            Some(sclk.map_into()),
-            Some(mosi.map_into()),
-            Some(miso.map_into()),
-            Some(d2.map_into()),
-            Some(d3.map_into()),
+            Some(sclk.into()),
+            Some(mosi.into()),
+            Some(miso.into()),
+            Some(d2.into()),
+            Some(d3.into()),
             None,
             None,
             config,
@@ -407,15 +400,14 @@ impl<'d> Spi<'d, Blocking> {
 impl<'d> Spi<'d, Async> {
     /// Create a new async SPI driver.
     pub fn new<T: Instance>(
-        peri: impl Peripheral<P = T> + 'd,
-        sclk: impl Peripheral<P = impl SclkPin<T>> + 'd,
-        mosi: impl Peripheral<P = impl MosiPin<T>> + 'd,
-        miso: impl Peripheral<P = impl MisoPin<T>> + 'd,
-        tx_dma: impl Peripheral<P = impl TxDma<T>> + 'd,
-        rx_dma: impl Peripheral<P = impl RxDma<T>> + 'd,
+        peri: Peri<'d, T>,
+        sclk: Peri<'d, impl SclkPin<T>>,
+        mosi: Peri<'d, impl MosiPin<T>>,
+        miso: Peri<'d, impl MisoPin<T>>,
+        tx_dma: Peri<'d, impl TxDma<T>>,
+        rx_dma: Peri<'d, impl RxDma<T>>,
         config: Config,
     ) -> Self {
-        into_ref!(sclk, mosi, miso);
 
         T::add_resource_group(0);
 
@@ -428,9 +420,9 @@ impl<'d> Spi<'d, Async> {
 
         Self::new_inner(
             peri,
-            Some(sclk.map_into()),
-            Some(mosi.map_into()),
-            Some(miso.map_into()),
+            Some(sclk.into()),
+            Some(mosi.into()),
+            Some(miso.into()),
             None,
             None,
             new_dma!(tx_dma),
@@ -440,14 +432,13 @@ impl<'d> Spi<'d, Async> {
     }
 
     pub fn new_half_duplex<T: Instance>(
-        peri: impl Peripheral<P = T> + 'd,
-        sclk: impl Peripheral<P = impl SclkPin<T>> + 'd,
-        mosi: impl Peripheral<P = impl MosiPin<T>> + 'd,
-        tx_dma: impl Peripheral<P = impl TxDma<T>> + 'd,
-        rx_dma: impl Peripheral<P = impl RxDma<T>> + 'd,
+        peri: Peri<'d, T>,
+        sclk: Peri<'d, impl SclkPin<T>>,
+        mosi: Peri<'d, impl MosiPin<T>>,
+        tx_dma: Peri<'d, impl TxDma<T>>,
+        rx_dma: Peri<'d, impl RxDma<T>>,
         mut config: Config,
     ) -> Self {
-        into_ref!(sclk, mosi);
 
         T::add_resource_group(0);
 
@@ -461,8 +452,8 @@ impl<'d> Spi<'d, Async> {
 
         Self::new_inner(
             peri,
-            Some(sclk.map_into()),
-            Some(mosi.map_into()),
+            Some(sclk.into()),
+            Some(mosi.into()),
             None,
             None,
             None,
@@ -473,13 +464,12 @@ impl<'d> Spi<'d, Async> {
     }
 
     pub fn new_rxonly<T: Instance>(
-        peri: impl Peripheral<P = T> + 'd,
-        sclk: impl Peripheral<P = impl SclkPin<T>> + 'd,
-        miso: impl Peripheral<P = impl MisoPin<T>> + 'd,
-        rx_dma: impl Peripheral<P = impl RxDma<T>> + 'd,
+        peri: Peri<'d, T>,
+        sclk: Peri<'d, impl SclkPin<T>>,
+        miso: Peri<'d, impl MisoPin<T>>,
+        rx_dma: Peri<'d, impl RxDma<T>>,
         config: Config,
     ) -> Self {
-        into_ref!(sclk, miso);
 
         T::add_resource_group(0);
 
@@ -491,9 +481,9 @@ impl<'d> Spi<'d, Async> {
 
         Self::new_inner(
             peri,
-            Some(sclk.map_into()),
+            Some(sclk.into()),
             None,
-            Some(miso.map_into()),
+            Some(miso.into()),
             None,
             None,
             None,
@@ -504,13 +494,12 @@ impl<'d> Spi<'d, Async> {
 
     /// Create a new blocking SPI driver, in TX-only mode (only MOSI pin, no MISO).
     pub fn new_txonly<T: Instance>(
-        peri: impl Peripheral<P = T> + 'd,
-        sclk: impl Peripheral<P = impl SclkPin<T>> + 'd,
-        mosi: impl Peripheral<P = impl MosiPin<T>> + 'd,
-        tx_dma: impl Peripheral<P = impl TxDma<T>> + 'd,
+        peri: Peri<'d, T>,
+        sclk: Peri<'d, impl SclkPin<T>>,
+        mosi: Peri<'d, impl MosiPin<T>>,
+        tx_dma: Peri<'d, impl TxDma<T>>,
         config: Config,
     ) -> Self {
-        into_ref!(sclk, mosi);
 
         T::add_resource_group(0);
 
@@ -522,8 +511,8 @@ impl<'d> Spi<'d, Async> {
 
         Self::new_inner(
             peri,
-            Some(sclk.map_into()),
-            Some(mosi.map_into()),
+            Some(sclk.into()),
+            Some(mosi.into()),
             None,
             None,
             None,
@@ -535,13 +524,11 @@ impl<'d> Spi<'d, Async> {
 
     /// Create a new SPI driver, in TX-only mode, without SCK pin.
     pub fn new_txonly_nosck<T: Instance>(
-        peri: impl Peripheral<P = T> + 'd,
-        mosi: impl Peripheral<P = impl MosiPin<T>> + 'd,
-        tx_dma: impl Peripheral<P = impl TxDma<T>> + 'd,
+        peri: Peri<'d, T>,
+        mosi: Peri<'d, impl MosiPin<T>>,
+        tx_dma: Peri<'d, impl TxDma<T>>,
         config: Config,
     ) -> Self {
-        into_ref!(mosi);
-
         T::add_resource_group(0);
 
         mosi.set_as_alt(mosi.alt_num());
@@ -549,7 +536,7 @@ impl<'d> Spi<'d, Async> {
         Self::new_inner(
             peri,
             None,
-            Some(mosi.map_into()),
+            Some(mosi.into()),
             None,
             None,
             None,
@@ -678,12 +665,12 @@ impl<'d> Spi<'d, Async> {
 
 impl<'d, M: PeriMode> Spi<'d, M> {
     fn new_inner<T: Instance>(
-        _peri: impl Peripheral<P = T> + 'd,
-        sclk: Option<PeripheralRef<'d, AnyPin>>,
-        mosi: Option<PeripheralRef<'d, AnyPin>>,
-        miso: Option<PeripheralRef<'d, AnyPin>>,
-        d2: Option<PeripheralRef<'d, AnyPin>>,
-        d3: Option<PeripheralRef<'d, AnyPin>>,
+        _peri: Peri<'d, T>,
+        sclk: Option<Peri<'d, AnyPin>>,
+        mosi: Option<Peri<'d, AnyPin>>,
+        miso: Option<Peri<'d, AnyPin>>,
+        d2: Option<Peri<'d, AnyPin>>,
+        d3: Option<Peri<'d, AnyPin>>,
         tx_dma: Option<ChannelAndRequest<'d>>,
         rx_dma: Option<ChannelAndRequest<'d>>,
         config: Config,

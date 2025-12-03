@@ -5,6 +5,7 @@ variants:
       - name: core0
         type: riscv
         core_access_options: !Riscv {}
+    stack_size: 1024
     memory_map:
       - !Ram
         name: ILM0
@@ -32,7 +33,6 @@ variants:
         range:
           start: 0x80000000
           end: 0x80100000
-        is_boot_memory: true
         cores:
           - core0
     flash_algorithms:
@@ -42,6 +42,7 @@ variants:
       - name: core0
         type: riscv
         core_access_options: !Riscv {}
+    stack_size: 1024
     memory_map:
       - !Ram
         name: ILM0
@@ -71,7 +72,6 @@ variants:
         range:
           start: 0x80000000
           end: 0x90000000
-        is_boot_memory: true
         cores:
           - core0
     flash_algorithms:
@@ -81,6 +81,7 @@ variants:
       - name: core0
         type: riscv
         core_access_options: !Riscv {}
+    stack_size: 1024
     memory_map:
       - !Ram
         name: ILM0
@@ -111,7 +112,6 @@ variants:
         range:
           start: 0x80000000
           end: 0x90000000
-        is_boot_memory: true
         cores:
           - core0
     flash_algorithms:
@@ -121,6 +121,7 @@ variants:
       - name: core0
         type: riscv
         core_access_options: !Riscv {}
+    stack_size: 1024
     memory_map:
       - !Ram
         name: ILM0
@@ -148,7 +149,6 @@ variants:
         range:
           start: 0x80000000
           end: 0x90000000
-        is_boot_memory: true
         cores:
           - core0
     flash_algorithms:
@@ -158,6 +158,7 @@ variants:
       - name: core0
         type: riscv
         core_access_options: !Riscv {}
+    stack_size: 1024
     memory_map:
       - !Ram
         name: ILM0
@@ -199,7 +200,6 @@ variants:
         range:
           start: 0x80000000
           end: 0x90000000
-        is_boot_memory: true
         cores:
           - core0
     flash_algorithms:

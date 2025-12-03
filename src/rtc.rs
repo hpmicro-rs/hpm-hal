@@ -1,4 +1,4 @@
-use embassy_hal_internal::{into_ref, Peripheral, PeripheralRef};
+use embassy_hal_internal::{Peri, PeripheralType};
 
 #[cfg(feature = "chrono")]
 pub type DateTime = chrono::DateTime<chrono::Utc>;

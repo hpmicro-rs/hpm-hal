@@ -4,8 +4,8 @@ use core::task::Poll;
 use embassy_usb_driver::EndpointError;
 use futures_util::future::poll_fn;
 
-use super::endpoint::Endpoint;
 use super::Instance;
+use super::endpoint::Endpoint;
 use crate::usb::{DCD_DATA, EP_IN_WAKERS, EP_OUT_WAKERS};
 
 pub struct ControlPipe<'d, T: Instance> {

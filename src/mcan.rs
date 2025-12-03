@@ -2,7 +2,7 @@
 //!
 //! Families: HPM63, HPM62, HPM68, HPM6E.
 
-use embassy_hal_internal::{into_ref, Peripheral, PeripheralRef};
+use embassy_hal_internal::{Peri, PeripheralType};
 
 use crate::gpio::AnyPin;
 use crate::interrupt;
@@ -18,21 +18,15 @@ const AHB_SRAM: *const () = 0xF0200000 as *const ();
 
 /// CAN peripheral dependencies, for use with `mcan` crate.
 #[allow(unused)]
-pub struct Dependencies<'d, T: Instance> {
-    rx: PeripheralRef<'d, AnyPin>,
-    tx: PeripheralRef<'d, AnyPin>,
+pub struct Dependencies<'d, T: Instance + PeripheralType> {
+    rx: Peri<'d, AnyPin>,
+    tx: Peri<'d, AnyPin>,
     kernel_clock: Hertz,
-    _peri: PeripheralRef<'d, T>,
+    _peri: Peri<'d, T>,
 }
 
-impl<'d, T: Instance> Dependencies<'d, T> {
-    pub fn new(
-        can: impl Peripheral<P = T> + 'd,
-        rx: impl Peripheral<P = impl RxPin<T>> + 'd,
-        tx: impl Peripheral<P = impl TxPin<T>> + 'd,
-    ) -> Self {
-        into_ref!(can, rx, tx);
-
+impl<'d, T: Instance + PeripheralType> Dependencies<'d, T> {
+    pub fn new(can: Peri<'d, T>, rx: Peri<'d, impl RxPin<T>>, tx: Peri<'d, impl TxPin<T>>) -> Self {
         rx.set_as_alt(rx.alt_num());
         tx.set_as_alt(tx.alt_num());
 
@@ -42,15 +36,15 @@ impl<'d, T: Instance> Dependencies<'d, T> {
         }
 
         Self {
-            rx: rx.map_into(),
-            tx: tx.map_into(),
+            rx: rx.into(),
+            tx: tx.into(),
             kernel_clock: T::frequency(),
             _peri: can,
         }
     }
 }
 
-unsafe impl<'d, T: Instance + mcan::core::CanId> mcan::core::Dependencies<T> for Dependencies<'d, T> {
+unsafe impl<'d, T: Instance + PeripheralType + mcan::core::CanId> mcan::core::Dependencies<T> for Dependencies<'d, T> {
     fn eligible_message_ram_start(&self) -> *const () {
         AHB_SRAM
     }

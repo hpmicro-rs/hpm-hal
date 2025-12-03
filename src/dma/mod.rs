@@ -7,11 +7,11 @@
 //! - CHANNEL_NUM: 8 or 32
 //! - MAX_COUNT: whether has XDMA
 //!
-//! [Peripheral DMA] -> DMAMUX -> DMA channel -> DMA request
+//! [PeripheralType DMA] -> DMAMUX -> DMA channel -> DMA request
 #![macro_use]
 
 mod dmamux;
-use embassy_hal_internal::{impl_peripheral, Peripheral};
+use embassy_hal_internal::{PeripheralType, impl_peripheral};
 
 #[cfg(ip_feature_dma_v2)]
 pub(crate) mod v2;
@@ -33,8 +33,8 @@ use crate::pac;
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 enum Dir {
-    MemoryToPeripheral,
-    PeripheralToMemory,
+    MemoryToPeripheralType,
+    PeripheralTypeToMemory,
 }
 
 pub(crate) struct ChannelInfo {
@@ -70,7 +70,7 @@ pub(crate) trait SealedChannel {
 }
 /// DMA channel.
 #[allow(private_bounds)]
-pub trait Channel: SealedChannel + Peripheral<P = Self> + Into<AnyChannel> + 'static {
+pub trait Channel: SealedChannel + PeripheralType + Into<AnyChannel> + 'static {
     /// Type-erase (degrade) this pin into an `AnyChannel`.
     ///
     /// This converts DMA channel singletons (`DMA1_CH3`, `DMA2_CH1`, ...), which
