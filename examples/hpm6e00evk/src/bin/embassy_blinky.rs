@@ -5,12 +5,12 @@
 
 use embassy_executor::Spawner;
 use embassy_time::Timer;
-use hal::gpio::Pin as _;
+use hal::Peri;
 use hpm_hal::gpio::{AnyPin, Level, Output};
 use {defmt_rtt as _, hpm_hal as hal};
 
 #[embassy_executor::task(pool_size = 3)]
-async fn blink(pin: AnyPin, interval_ms: u32) {
+async fn blink(pin: Peri<'static, AnyPin>, interval_ms: u32) {
     let mut led = Output::new(pin, Level::Low, Default::default());
 
     loop {
@@ -26,9 +26,9 @@ async fn main(spawner: Spawner) -> ! {
 
     defmt::info!("Board init!");
 
-    spawner.spawn(blink(p.PE14.degrade(), 100)).unwrap();
-    spawner.spawn(blink(p.PE15.degrade(), 200)).unwrap();
-    spawner.spawn(blink(p.PE04.degrade(), 300)).unwrap();
+    spawner.spawn(blink(p.PE14.into(), 100)).unwrap();
+    spawner.spawn(blink(p.PE15.into(), 200)).unwrap();
+    spawner.spawn(blink(p.PE04.into(), 300)).unwrap();
 
     defmt::info!("Tasks init!");
 
@@ -41,12 +41,5 @@ async fn main(spawner: Spawner) -> ! {
 
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
-    let mut err = heapless::String::<1024>::new();
-
-    use core::fmt::Write as _;
-
-    write!(err, "panic: {}", _info).ok();
-
-    defmt::info!("{}", err.as_str());
     loop {}
 }

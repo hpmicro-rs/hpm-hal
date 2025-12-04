@@ -7,7 +7,6 @@ use core::mem;
 
 use embassy_executor::Spawner;
 use embassy_time::Timer;
-use embedded_io::Write as _;
 use hal::gpio::{AnyPin, Level, Output, Pin as _};
 use hal::mode::Blocking;
 use hal::pac;
@@ -22,7 +21,8 @@ macro_rules! println {
         #[allow(unused_unsafe)]
         unsafe {
             if let Some(uart) = UART.as_mut() {
-                let _ = writeln!(uart, $($arg)*);
+                use core::fmt::Write;
+                let _ = core::writeln!(uart, $($arg)*);
             }
         }
     };
@@ -285,7 +285,7 @@ fn init_ext_ram() {
 }
 
 #[embassy_executor::task(pool_size = 3)]
-async fn blink(pin: AnyPin, interval_ms: u32) {
+async fn blink(pin: hal::Peri<'static, AnyPin>, interval_ms: u32) {
     // all leds are active low
     let mut led = Output::new(pin, Level::Low, Default::default());
 
@@ -402,9 +402,9 @@ async fn main(spawner: Spawner) -> ! {
     let led_g = p.PE15;
     let led_b = p.PE04;
 
-    spawner.spawn(blink(led_r.degrade(), 1000)).unwrap();
-    spawner.spawn(blink(led_g.degrade(), 2000)).unwrap();
-    spawner.spawn(blink(led_b.degrade(), 3000)).unwrap();
+    spawner.spawn(blink(led_r.into(), 1000)).unwrap();
+    spawner.spawn(blink(led_g.into(), 2000)).unwrap();
+    spawner.spawn(blink(led_b.into(), 3000)).unwrap();
     defmt::info!("Tasks init!");
 
     let uart = hal::uart::Uart::new_blocking(p.UART0, p.PA01, p.PA00, Default::default()).unwrap();

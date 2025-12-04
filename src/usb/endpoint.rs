@@ -4,7 +4,7 @@ use core::task::Poll;
 
 use embassy_usb_driver::{Direction, EndpointAddress, EndpointIn, EndpointInfo, EndpointOut};
 
-use super::{DCD_DATA, QTD_COUNT_EACH_QHD, local_to_sys_address};
+use super::{QTD_COUNT_EACH_QHD, get_active_ep_state, local_to_sys_address};
 use crate::usb::{EP_IN_WAKERS, EP_OUT_WAKERS, Instance};
 
 /// USB transfer error types
@@ -116,8 +116,9 @@ impl<'d, T: Instance, D> Endpoint<'d, T, D> {
 
             // Initialize qtd with the data (address conversion is done inside reinit_with)
             unsafe {
-                DCD_DATA
-                    .qtd_list
+                let ep_state = get_active_ep_state();
+                ep_state
+                    .qtd_list()
                     .qtd(qtd_idx)
                     .reinit_with(&data[data_offset..], transfer_bytes)
             };
@@ -125,7 +126,8 @@ impl<'d, T: Instance, D> Endpoint<'d, T, D> {
             // Last chunk of the data
             if remaining_bytes == 0 {
                 unsafe {
-                    DCD_DATA.qtd_list.qtd(qtd_idx).qtd_token().modify(|w| w.set_ioc(true));
+                    let ep_state = get_active_ep_state();
+                    ep_state.qtd_list().qtd(qtd_idx).qtd_token().modify(|w| w.set_ioc(true));
                 };
             }
 
@@ -135,9 +137,10 @@ impl<'d, T: Instance, D> Endpoint<'d, T, D> {
             // Note: C SDK does NOT convert QTD->QTD address, only QHD->QTD address
             if let Some(prev_qtd) = prev_qtd {
                 unsafe {
-                    let qtd_addr = DCD_DATA.qtd_list.qtd(qtd_idx).as_ptr() as u32;
-                    DCD_DATA
-                        .qtd_list
+                    let ep_state = get_active_ep_state();
+                    let qtd_addr = ep_state.qtd_list().qtd(qtd_idx).as_ptr() as u32;
+                    ep_state
+                        .qtd_list()
                         .qtd(prev_qtd)
                         .next_dtd()
                         .modify(|w| w.set_next_dtd_addr(qtd_addr >> 5));
@@ -158,13 +161,14 @@ impl<'d, T: Instance, D> Endpoint<'d, T, D> {
         let first_idx = first_qtd.unwrap();
 
         unsafe {
+            let ep_state = get_active_ep_state();
             if ep_num == 0 {
-                DCD_DATA.qhd_list.qhd(ep_idx).cap().modify(|w| {
+                ep_state.qhd_list().qhd(ep_idx).cap().modify(|w| {
                     w.set_ios(true);
                 });
             }
-            let qtd_addr = local_to_sys_address(DCD_DATA.qtd_list.qtd(first_idx).as_ptr() as u32);
-            DCD_DATA.qhd_list.qhd(ep_idx).next_dtd().modify(|w| {
+            let qtd_addr = local_to_sys_address(ep_state.qtd_list().qtd(first_idx).as_ptr() as u32);
+            ep_state.qhd_list().qhd(ep_idx).next_dtd().modify(|w| {
                 w.set_next_dtd_addr(qtd_addr >> 5);
                 // T **MUST** be set to 0
                 w.set_t(false);
@@ -260,7 +264,10 @@ impl<'d, T: Instance> EndpointOut for Endpoint<'d, T, Out> {
 
         // Get the actual length of the packet (OUT endpoint: ep_idx = 2 * ep_num)
         let ep_idx = 2 * ep_num;
-        let len = unsafe { DCD_DATA.qhd_list.qhd(ep_idx).qtd_token().read().total_bytes() as usize };
+        let len = unsafe {
+            let ep_state = get_active_ep_state();
+            ep_state.qhd_list().qhd(ep_idx).qtd_token().read().total_bytes() as usize
+        };
         Ok(buf.len() - len)
     }
 }

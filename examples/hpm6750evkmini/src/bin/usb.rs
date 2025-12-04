@@ -11,7 +11,7 @@ use embassy_usb::driver::EndpointError;
 use embassy_usb::Builder;
 use embedded_io::Write as _;
 use futures_util::future::join;
-use hal::usb::{Instance, UsbDriver};
+use hal::usb::{EndpointState, Instance, UsbDriver};
 use hpm_hal as hal;
 use hpm_hal::gpio::Pin;
 use hpm_hal::mode::Blocking;
@@ -21,6 +21,10 @@ use static_cell::StaticCell;
 bind_interrupts!(struct Irqs {
     USB0 => hal::usb::InterruptHandler<peripherals::USB0>;
 });
+
+/// USB endpoint state - must be in non-cacheable memory for DMA access
+#[link_section = ".noncacheable"]
+static EP_STATE: EndpointState = EndpointState::new();
 
 assign_resources! {
     // FT2232 UART
@@ -56,7 +60,7 @@ async fn main(_spawner: Spawner) -> ! {
     let uart = hal::uart::Uart::new_blocking(r.uart.uart, r.uart.rx, r.uart.tx, Default::default()).unwrap();
     unsafe { UART = Some(uart) };
 
-    let usb_driver = hal::usb::UsbDriver::new(p.USB0, Default::default());
+    let usb_driver = hal::usb::UsbDriver::new(p.USB0, Irqs, Default::default(), &EP_STATE);
 
     // Create embassy-usb Config
     let mut config = embassy_usb::Config::new(0xc0de, 0xcafe);

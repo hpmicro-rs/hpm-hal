@@ -16,6 +16,7 @@
 mod buffered;
 pub use buffered::*;
 
+#[cfg(ip_feature_dma_v2)]
 mod ringbuffered;
 use core::future::poll_fn;
 use core::marker::PhantomData;
@@ -26,6 +27,7 @@ use embassy_hal_internal::drop::OnDrop;
 use embassy_hal_internal::{Peri, PeripheralType};
 use embassy_sync::waitqueue::AtomicWaker;
 use futures_util::future::{Either, select};
+#[cfg(ip_feature_dma_v2)]
 pub use ringbuffered::*;
 
 use crate::dma::ChannelAndRequest;

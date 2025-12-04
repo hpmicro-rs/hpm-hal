@@ -7,20 +7,18 @@ runner = 'riscv64-unknown-elf-gdb -x ./openocd-semihosting.gdb'
 # runner = "probe-rs run --chip HPM6750 --protocol jtag --chip-description-path ../../HPMicro.yaml"
 
 rustflags = [
-    # +zba,+zbb,+zbc,+zbs are not available
+    # +zba,+zbb,+zbc,+zbs are not available on hpm67
     "-C",
     "target-feature=+d,+zfh",
     # Linker scripts:
     "-C",
     "link-arg=-Tmemory-ram.x",
     "-C",
-    "link-arg=-Tdevice.x", # __VECTORED_INTERRUPTS
+    "link-arg=-Tdevice.x",
     "-C",
-    "link-arg=-Tlink.x",
+    "link-arg=-Thpm-link.x",
     "-C",
     "link-arg=-nmagic",
-    # "--emit", "obj",
-    # "--emit", "asm",
 ]
 
 [unstable]

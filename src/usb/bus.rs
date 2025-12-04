@@ -8,21 +8,22 @@ use embedded_hal::delay::DelayNs;
 use hpm_metapac::usb::regs::*;
 use riscv::delay::McycleDelay;
 
-use super::{ENDPOINT_COUNT, EP_IN_WAKERS, EP_OUT_WAKERS, Instance, init_qhd, local_to_sys_address};
-use crate::usb::{BUS_WAKER, Config, DCD_DATA, EpConfig, IRQ_RESET, IRQ_SUSPEND, IRQ_VBUS_CHANGE, reset_dcd_data};
+use super::{ENDPOINT_COUNT, EP_IN_WAKERS, EP_OUT_WAKERS, EndpointState, Instance, init_qhd, local_to_sys_address};
+use crate::usb::{BUS_WAKER, Config, EpConfig, IRQ_RESET, IRQ_SUSPEND, IRQ_VBUS_CHANGE, reset_dcd_data};
 
 /// USB bus
-pub struct Bus<T: Instance> {
-    pub(crate) _phantom: PhantomData<T>,
+pub struct Bus<'d, T: Instance> {
+    pub(crate) _phantom: PhantomData<&'d T>,
     pub(crate) endpoints_out: [EndpointInfo; ENDPOINT_COUNT],
     pub(crate) endpoints_in: [EndpointInfo; ENDPOINT_COUNT],
     pub(crate) delay: McycleDelay,
     pub(crate) inited: bool,
     pub(crate) config: Config,
+    pub(crate) ep_state: &'d EndpointState,
 }
 
 /// Implement the `embassy_usb_driver::Bus` trait for `Bus`.
-impl<T: Instance> embassy_usb_driver::Bus for Bus<T> {
+impl<T: Instance> embassy_usb_driver::Bus for Bus<'_, T> {
     /// Enable the USB bus.
     async fn enable(&mut self) {
         // Init the usb phy and device controller
@@ -32,10 +33,8 @@ impl<T: Instance> embassy_usb_driver::Bus for Bus<T> {
         {
             let r = T::info().regs;
             // Set endpoint list address (convert to system address for DMA access)
-            unsafe {
-                let qhd_addr = local_to_sys_address(DCD_DATA.qhd_list.as_ptr() as u32);
-                r.endptlistaddr().modify(|w| w.0 = qhd_addr);
-            };
+            let qhd_addr = local_to_sys_address(self.ep_state.qhd_list_addr());
+            r.endptlistaddr().modify(|w| w.0 = qhd_addr);
 
             // Clear status
             r.usbsts().modify(|w| w.0 = w.0);
@@ -212,7 +211,7 @@ impl<T: Instance> embassy_usb_driver::Bus for Bus<T> {
     }
 }
 
-impl<T: Instance> Bus<T> {
+impl<T: Instance> Bus<'_, T> {
     /// Initialize USB phy
     fn phy_init(&mut self) {
         let r = T::info().regs;
@@ -313,7 +312,7 @@ impl<T: Instance> Bus<T> {
 
         // Reset DCD_DATA
         unsafe {
-            reset_dcd_data(ep0_max_packet_size);
+            reset_dcd_data(self.ep_state, ep0_max_packet_size);
         }
     }
 
@@ -406,7 +405,7 @@ impl<T: Instance> Bus<T> {
         }
 
         // Prepare queue head
-        unsafe { init_qhd(&ep_config) };
+        unsafe { init_qhd(self.ep_state, &ep_config) };
 
         // Open endpoint
         let ep_num = ep_config.ep_addr.index();

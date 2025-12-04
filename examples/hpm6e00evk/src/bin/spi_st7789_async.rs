@@ -135,7 +135,7 @@ macro_rules! println {
     ($($arg:tt)*) => {
         unsafe {
             if let Some(uart) = UART.as_mut() {
-                let _ = writeln!(uart, $($arg)*);
+                let _ = core::fmt::Write::write_fmt(uart, format_args_nl!($($arg)*));
             }
         }
     };
@@ -301,7 +301,7 @@ static mut FB0: FrameBufferType = FrameBufferType::new();
 static mut FB1: FrameBufferType = FrameBufferType::new();
 
 #[embassy_executor::task]
-async fn double_buffer_drawing(mbx: peripherals::MBX0B) {
+async fn double_buffer_drawing(mbx: hal::Peri<'static, peripherals::MBX0B>) {
     let mut mbx = hal::mbx::Mbx::new(mbx, Irqs);
 
     let mut diff = 0;
@@ -455,6 +455,5 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 
     defmt::info!("{}", err.as_str());
 
-    println!("PANIC: {}", info);
     loop {}
 }
