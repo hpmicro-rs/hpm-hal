@@ -89,7 +89,9 @@ impl<'d, T: Instance> embassy_usb_driver::ControlPipe for ControlPipe<'d, T> {
         last: bool,
     ) -> Result<(), embassy_usb_driver::EndpointError> {
         let r = T::info().regs;
-        self.ep_in.transfer(data).unwrap();
+        self.ep_in
+            .transfer(data)
+            .map_err(|_| EndpointError::BufferOverflow)?;
 
         let _ = poll_fn(|cx| {
             EP_IN_WAKERS[0].register(cx.waker());
@@ -104,7 +106,8 @@ impl<'d, T: Instance> embassy_usb_driver::ControlPipe for ControlPipe<'d, T> {
         .await;
 
         if last {
-            self.ep_out.transfer(&[]).unwrap();
+            // ZLT with empty buffer never fails
+            let _ = self.ep_out.transfer(&[]);
         }
         Ok(())
     }
@@ -114,7 +117,8 @@ impl<'d, T: Instance> embassy_usb_driver::ControlPipe for ControlPipe<'d, T> {
     /// Causes the STATUS packet for the current request to be ACKed.
     async fn accept(&mut self) {
         let r = T::info().regs;
-        self.ep_in.transfer(&[]).unwrap();
+        // ZLT with empty buffer never fails
+        let _ = self.ep_in.transfer(&[]);
 
         let _ = poll_fn(|cx| {
             EP_IN_WAKERS[0].register(cx.waker());
