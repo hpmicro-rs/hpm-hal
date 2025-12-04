@@ -4,7 +4,7 @@ use core::task::{Context, Poll};
 use embassy_hal_internal::Peri;
 use embassy_sync::waitqueue::AtomicWaker;
 
-use super::{AnyPin, Flex, Input, Pin as GpioPin, SealedPin};
+use super::{AnyPin, Flex, Input, SealedPin};
 use crate::internal::BitIter;
 
 // Px00 to Px31
