@@ -22,7 +22,7 @@ hal::bind_interrupts!(struct Irqs {
 async fn main(_spawner: Spawner) -> ! {
     let p = hal::init(Default::default());
 
-    let usb_driver = hal::usb::UsbDriver::new(p.USB0, Irqs, p.PA24, p.PA25);
+    let usb_driver = hal::usb::UsbDriver::new(p.USB0, Irqs, p.PA24, p.PA25, Default::default());
 
     // Create embassy-usb Config
     let mut config = embassy_usb::Config::new(0xc0de, 0xcafe);

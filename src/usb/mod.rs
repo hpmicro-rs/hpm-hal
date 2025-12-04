@@ -3,7 +3,6 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use bus::Bus;
 use control_pipe::ControlPipe;
-#[cfg(feature = "usb-pin-reuse-hpm5300")]
 use embassy_hal_internal::Peri;
 use embassy_sync::waitqueue::AtomicWaker;
 use embassy_usb_driver::{Direction, Driver, EndpointAddress, EndpointAllocError, EndpointInfo, EndpointType};
@@ -19,6 +18,29 @@ use types_v62 as types;
 
 use crate::interrupt::typelevel::Interrupt as _;
 use crate::sysctl;
+
+/// USB driver configuration.
+#[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[non_exhaustive]
+pub struct Config {
+    /// Force Full-Speed mode instead of High-Speed.
+    ///
+    /// When `false` (default), the USB controller will negotiate High-Speed
+    /// if connected to a High-Speed capable host.
+    ///
+    /// When `true`, the USB controller will be forced to Full-Speed mode
+    /// by setting PORTSC1.PFSC bit.
+    pub force_full_speed: bool,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            force_full_speed: false,
+        }
+    }
+}
 
 /// Convert local memory address to system bus address for USB DMA access.
 ///
@@ -288,14 +310,24 @@ pub struct UsbDriver<'d, T: Instance> {
     phantom: PhantomData<&'d mut T>,
     endpoints_in: [EndpointAllocData; ENDPOINT_COUNT],
     endpoints_out: [EndpointAllocData; ENDPOINT_COUNT],
+    config: Config,
 }
 
 impl<'d, T: Instance> UsbDriver<'d, T> {
+    /// Create a new USB driver.
+    ///
+    /// # Arguments
+    /// * `_peri` - USB peripheral
+    /// * `_irq` - Interrupt binding
+    /// * `dm` - D- pin (only when `usb-pin-reuse-hpm5300` feature is enabled)
+    /// * `dp` - D+ pin (only when `usb-pin-reuse-hpm5300` feature is enabled)
+    /// * `config` - USB configuration (speed mode, etc.)
     pub fn new(
         _peri: Peri<'d, T>,
         _irq: impl crate::interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'd,
         #[cfg(feature = "usb-pin-reuse-hpm5300")] dm: Peri<'d, impl DmPin<T>>,
         #[cfg(feature = "usb-pin-reuse-hpm5300")] dp: Peri<'d, impl DpPin<T>>,
+        config: Config,
     ) -> Self {
         unsafe { T::Interrupt::enable() };
 
@@ -338,6 +370,7 @@ impl<'d, T: Instance> UsbDriver<'d, T> {
             phantom: PhantomData,
             endpoints_in: [EndpointAllocData::new(Direction::In); ENDPOINT_COUNT],
             endpoints_out: [EndpointAllocData::new(Direction::Out); ENDPOINT_COUNT],
+            config,
         }
     }
 
@@ -503,6 +536,7 @@ impl<'a, T: Instance> Driver<'a> for UsbDriver<'a, T> {
             endpoints_out,
             delay: McycleDelay::new(sysctl::clocks().cpu0.0),
             inited: false,
+            config: self.config,
         };
 
         (
