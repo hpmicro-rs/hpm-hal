@@ -143,6 +143,14 @@ fn main() {
         cfgs.enable(&format!("ip_feature_{}", feature.to_ascii_lowercase()));
     }
 
+    // Time driver selection
+    if env::var("CARGO_FEATURE_TIME_DRIVER_GPTMR0").is_ok() {
+        cfgs.enable("time_driver_gptmr0");
+    }
+    if env::var("CARGO_FEATURE_TIME_DRIVER_GPTMR1").is_ok() {
+        cfgs.enable("time_driver_gptmr1");
+    }
+
     for p in METADATA.peripherals {
         if let Some(r) = &p.registers {
             cfgs.enable(r.kind);

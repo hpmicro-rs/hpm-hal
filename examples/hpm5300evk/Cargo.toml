@@ -3,6 +3,10 @@ name = "hpm5300evk"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = []
+time-driver-gptmr0 = ["hpm-hal/time-driver-gptmr0"]
+
 [dependencies]
 # hpm5301 is a subset of hpm5361, either is ok if you have the HPM5301 board.
 hpm-hal = { path = "../..", features = [

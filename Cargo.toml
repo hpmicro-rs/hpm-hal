@@ -73,6 +73,10 @@ time = ["dep:embassy-time"]
 embassy = ["dep:embassy-time-driver", "dep:embassy-time-queue-utils"]
 usb-pin-reuse-hpm5300 = []
 
+# Time driver selection (default: MCHTMR)
+time-driver-gptmr0 = []
+time-driver-gptmr1 = []
+
 mcan = ["dep:mcan"]
 chrono = ["dep:chrono"]
 
