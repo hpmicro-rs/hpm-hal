@@ -17,7 +17,7 @@ bind_interrupts!(struct Irqs {
 const BANNER: &str = include_str!("../../../assets/BANNER");
 
 #[embassy_executor::task(pool_size = 3)]
-async fn blink(pin: AnyPin, interval_ms: u32) {
+async fn blink(pin: hal::Peri<'static, AnyPin>, interval_ms: u32) {
     // all leds are active low
     let mut led = Output::new(pin, Level::Low, Default::default());
 
@@ -41,9 +41,9 @@ async fn main(spawner: Spawner) -> ! {
     let led_g = p.PE15; // PWM1_P_7
     let led_b = p.PE04; // PWM0_P_4
 
-    spawner.spawn(blink(led_r.degrade(), 1000)).unwrap();
-    spawner.spawn(blink(led_g.degrade(), 2000)).unwrap();
-    spawner.spawn(blink(led_b.degrade(), 3000)).unwrap();
+    spawner.spawn(blink(led_r.into(), 1000)).unwrap();
+    spawner.spawn(blink(led_g.into(), 2000)).unwrap();
+    spawner.spawn(blink(led_b.into(), 3000)).unwrap();
     defmt::info!("Tasks init!");
 
     let mut uart = hal::uart::Uart::new(

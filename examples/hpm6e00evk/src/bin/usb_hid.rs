@@ -13,6 +13,7 @@ use embassy_usb::control::OutResponse;
 use embassy_usb::{Builder, Handler};
 use futures_util::future::join;
 use hpm_hal::gpio::{Input, Pull};
+use hpm_hal::usb::EndpointState;
 use hpm_hal::{bind_interrupts, peripherals};
 use static_cell::StaticCell;
 use usbd_hid::descriptor::{KeyboardReport, SerializedDescriptor};
@@ -24,11 +25,15 @@ bind_interrupts!(struct Irqs {
 
 static STATE: StaticCell<State> = StaticCell::new();
 
+/// USB endpoint state - must be in non-cacheable memory for DMA access
+#[link_section = ".noncacheable"]
+static EP_STATE: EndpointState = EndpointState::new();
+
 #[embassy_executor::main(entry = "hpm_hal::entry")]
 async fn main(_spawner: Spawner) -> ! {
     let p = hal::init(Default::default());
 
-    let usb_driver = hal::usb::UsbDriver::new(p.USB0, Default::default());
+    let usb_driver = hal::usb::UsbDriver::new(p.USB0, Irqs, Default::default(), &EP_STATE);
 
     // Create embassy-usb Config
     let mut config = embassy_usb::Config::new(0xc0de, 0xcafe);
@@ -82,7 +87,7 @@ async fn main(_spawner: Spawner) -> ! {
     // Run the USB device.
     let usb_fut = usb.run();
 
-    let mut button = Input::new(p.PA03, Pull::Down);
+    let mut button = Input::new(p.PA03.into(), Pull::Down);
 
     let (reader, mut writer) = hid.split();
 

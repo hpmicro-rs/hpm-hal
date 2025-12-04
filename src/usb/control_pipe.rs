@@ -6,7 +6,8 @@ use futures_util::future::poll_fn;
 
 use super::Instance;
 use super::endpoint::{Endpoint, In, Out};
-use crate::usb::{DCD_DATA, EP_IN_WAKERS, EP_OUT_WAKERS};
+use super::get_active_ep_state;
+use crate::usb::{EP_IN_WAKERS, EP_OUT_WAKERS};
 
 pub struct ControlPipe<'d, T: Instance> {
     pub(crate) _phantom: PhantomData<&'d mut T>,
@@ -49,7 +50,10 @@ impl<'d, T: Instance> embassy_usb_driver::ControlPipe for ControlPipe<'d, T> {
         r.usbintr().modify(|w| w.set_ue(true));
 
         // Read setup packet from qhd
-        unsafe { DCD_DATA.qhd_list.qhd(0).get_setup_request() }
+        unsafe {
+            let ep_state = get_active_ep_state();
+            ep_state.qhd_list().qhd(0).get_setup_request()
+        }
     }
 
     /// Read a DATA OUT packet into `buf` in response to a control write request.

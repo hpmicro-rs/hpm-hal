@@ -31,12 +31,15 @@ unsafe fn on_interrupt(r: pac::uart::Uart, state: &'static BufferedState) {
 
     // Handle errors
     if lsr.pe() {
+        #[cfg(feature = "defmt")]
         defmt::warn!("Parity error");
     }
     if lsr.fe() {
+        #[cfg(feature = "defmt")]
         defmt::warn!("Framing error");
     }
     if lsr.oe() {
+        #[cfg(feature = "defmt")]
         defmt::warn!("Overrun error");
     }
 

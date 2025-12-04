@@ -1,5 +1,5 @@
 use core::marker::PhantomData;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
 use bus::Bus;
 use control_pipe::ControlPipe;
@@ -96,14 +96,34 @@ pub(crate) fn local_to_sys_address(addr: u32) -> u32 {
 mod bus;
 mod control_pipe;
 mod endpoint;
+mod state;
 #[cfg(any(hpm53, hpm68, hpm6e))]
 mod types_v53;
 #[cfg(any(hpm67, hpm63, hpm62))]
 mod types_v62;
 
+pub use state::EndpointState;
+
 static IRQ_RESET: AtomicBool = AtomicBool::new(false);
 static IRQ_SUSPEND: AtomicBool = AtomicBool::new(false);
 static IRQ_VBUS_CHANGE: AtomicBool = AtomicBool::new(false);
+
+/// Global pointer to the active EndpointState.
+/// Set by UsbDriver::new(), accessed by Endpoint transfer operations.
+/// Safety: Protected by EndpointState's runtime singleton check.
+static ACTIVE_EP_STATE: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+
+/// Get the active EndpointState for transfer operations.
+///
+/// # Safety
+/// Caller must ensure that a USB driver has been created and the EndpointState is valid.
+/// This is guaranteed by the driver lifecycle management.
+#[inline]
+pub(crate) unsafe fn get_active_ep_state() -> &'static EndpointState {
+    let ptr = ACTIVE_EP_STATE.load(Ordering::Acquire);
+    debug_assert!(!ptr.is_null(), "No active EndpointState");
+    &*(ptr as *const EndpointState)
+}
 
 const AW_NEW: AtomicWaker = AtomicWaker::new();
 static EP_IN_WAKERS: [AtomicWaker; ENDPOINT_COUNT] = [AW_NEW; ENDPOINT_COUNT];
@@ -115,42 +135,10 @@ const ENDPOINT_COUNT: usize = 8;
 #[cfg(usb_v53)]
 const ENDPOINT_COUNT: usize = 16;
 
-const QTD_COUNT_EACH_QHD: usize = 8;
+pub(crate) const QTD_COUNT_EACH_QHD: usize = 8;
 const QHD_BUFFER_COUNT: usize = 5;
-const QHD_ITEM_SIZE: usize = 64;
-const QTD_ITEM_SIZE: usize = 32;
-
-/// FIXME: Better way to handle the ehci data, ref: https://github.com/imxrt-rs/imxrt-usbd/blob/master/src/lib.rs
-///
-/// USB DCD data must be placed in non-cacheable memory region because:
-/// - USB controller is a DMA master that directly accesses memory
-/// - CPU cache and DMA data must be consistent
-/// See: HPMicro C SDK `dcd_hpm.c` uses `ATTR_PLACE_AT_NONCACHEABLE_WITH_ALIGNMENT`
-#[unsafe(link_section = ".noncacheable")]
-static mut QHD_LIST_DATA: QhdListData = QhdListData([0; QHD_ITEM_SIZE * ENDPOINT_COUNT * 2]);
-#[unsafe(link_section = ".noncacheable")]
-static mut QTD_LIST_DATA: QtdListData = QtdListData([0; QTD_ITEM_SIZE * ENDPOINT_COUNT * 2 * QTD_COUNT_EACH_QHD]);
-static mut DCD_DATA: DcdData = DcdData {
-    qhd_list: unsafe { QhdList::from_ptr(QHD_LIST_DATA.0.as_ptr() as *mut _) },
-    qtd_list: unsafe { QtdList::from_ptr(QTD_LIST_DATA.0.as_ptr() as *mut _) },
-};
-
-/// QHD list data structure with 2048-byte alignment requirement
-/// Placed in non-cacheable memory for DMA access
-#[repr(C, align(2048))]
-pub(crate) struct QhdListData([u8; QHD_ITEM_SIZE * ENDPOINT_COUNT * 2]);
-
-/// QTD list data structure with 32-byte alignment requirement
-/// Placed in non-cacheable memory for DMA access
-#[repr(C, align(32))]
-pub(crate) struct QtdListData([u8; QTD_ITEM_SIZE * ENDPOINT_COUNT * 2 * QTD_COUNT_EACH_QHD]);
-
-pub(crate) struct DcdData {
-    /// List of queue head
-    pub(crate) qhd_list: QhdList,
-    /// List of queue transfer descriptor
-    pub(crate) qtd_list: QtdList,
-}
+pub(crate) const QHD_ITEM_SIZE: usize = 64;
+pub(crate) const QTD_ITEM_SIZE: usize = 32;
 
 impl Qhd {
     pub(crate) fn reset(&mut self) {
@@ -174,40 +162,45 @@ impl Qhd {
     }
 }
 
-pub(crate) unsafe fn reset_dcd_data(ep0_max_packet_size: u16) {
+pub(crate) unsafe fn reset_dcd_data(ep_state: &EndpointState, ep0_max_packet_size: u16) {
+    let qhd_list = ep_state.qhd_list();
+    let qtd_list = ep_state.qtd_list();
+
     // Clear all qhd and qtd data
-    for i in 0..ENDPOINT_COUNT as usize * 2 {
-        DCD_DATA.qhd_list.qhd(i).reset();
+    for i in 0..ENDPOINT_COUNT * 2 {
+        qhd_list.qhd(i).reset();
     }
-    for i in 0..ENDPOINT_COUNT as usize * 2 * QTD_COUNT_EACH_QHD as usize {
-        DCD_DATA.qtd_list.qtd(i).reset();
+    for i in 0..ENDPOINT_COUNT * 2 * QTD_COUNT_EACH_QHD {
+        qtd_list.qtd(i).reset();
     }
 
     // Set qhd for EP0(qhd0&1)
-    DCD_DATA.qhd_list.qhd(0).cap().modify(|w| {
+    qhd_list.qhd(0).cap().modify(|w| {
         w.set_max_packet_size(ep0_max_packet_size);
         w.set_zero_length_termination(true);
         // IOS is set for control OUT endpoint
         w.set_ios(true);
     });
-    DCD_DATA.qhd_list.qhd(1).cap().modify(|w| {
+    qhd_list.qhd(1).cap().modify(|w| {
         w.set_max_packet_size(ep0_max_packet_size);
         w.set_zero_length_termination(true);
     });
 
     // Set the next pointer INVALID(T=1)
-    DCD_DATA.qhd_list.qhd(0).next_dtd().write(|w| w.set_t(true));
-    DCD_DATA.qhd_list.qhd(1).next_dtd().write(|w| w.set_t(true));
+    qhd_list.qhd(0).next_dtd().write(|w| w.set_t(true));
+    qhd_list.qhd(1).next_dtd().write(|w| w.set_t(true));
 }
 
-pub(crate) unsafe fn init_qhd(ep_config: &EpConfig) {
+pub(crate) unsafe fn init_qhd(ep_state: &EndpointState, ep_config: &EpConfig) {
+    let qhd_list = ep_state.qhd_list();
+
     let ep_num = ep_config.ep_addr.index();
     let ep_idx = 2 * ep_num + ep_config.ep_addr.is_in() as usize;
 
     // Prepare queue head
-    DCD_DATA.qhd_list.qhd(ep_idx).reset();
+    qhd_list.qhd(ep_idx).reset();
 
-    DCD_DATA.qhd_list.qhd(ep_idx).cap().modify(|w| {
+    qhd_list.qhd(ep_idx).cap().modify(|w| {
         w.set_max_packet_size(ep_config.max_packet_size & 0x7FF);
         w.set_zero_length_termination(true);
         if ep_config.transfer == EndpointType::Isochronous as u8 {
@@ -218,7 +211,7 @@ pub(crate) unsafe fn init_qhd(ep_config: &EpConfig) {
         }
     });
 
-    DCD_DATA.qhd_list.qhd(ep_idx).next_dtd().modify(|w| w.set_t(true));
+    qhd_list.qhd(ep_idx).next_dtd().modify(|w| w.set_t(true));
 }
 
 impl Qtd {
@@ -311,6 +304,7 @@ pub struct UsbDriver<'d, T: Instance> {
     endpoints_in: [EndpointAllocData; ENDPOINT_COUNT],
     endpoints_out: [EndpointAllocData; ENDPOINT_COUNT],
     config: Config,
+    ep_state: &'d EndpointState,
 }
 
 impl<'d, T: Instance> UsbDriver<'d, T> {
@@ -322,13 +316,34 @@ impl<'d, T: Instance> UsbDriver<'d, T> {
     /// * `dm` - D- pin (only when `usb-pin-reuse-hpm5300` feature is enabled)
     /// * `dp` - D+ pin (only when `usb-pin-reuse-hpm5300` feature is enabled)
     /// * `config` - USB configuration (speed mode, etc.)
+    /// * `ep_state` - Endpoint state, must be placed in non-cacheable memory with `#[link_section = ".noncacheable"]`
+    ///
+    /// # Panics
+    ///
+    /// Panics if `ep_state` is already in use by another driver instance.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// #[link_section = ".noncacheable"]
+    /// static EP_STATE: EndpointState = EndpointState::new();
+    ///
+    /// let driver = UsbDriver::new(p.USB0, Irqs, p.PA24, p.PA25, Default::default(), &EP_STATE);
+    /// ```
     pub fn new(
         _peri: Peri<'d, T>,
         _irq: impl crate::interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'd,
         #[cfg(feature = "usb-pin-reuse-hpm5300")] dm: Peri<'d, impl DmPin<T>>,
         #[cfg(feature = "usb-pin-reuse-hpm5300")] dp: Peri<'d, impl DpPin<T>>,
         config: Config,
+        ep_state: &'d EndpointState,
     ) -> Self {
+        // Runtime singleton check
+        assert!(ep_state.try_acquire(), "EndpointState is already in use by another USB driver");
+
+        // Store the active ep_state pointer for Endpoint access
+        ACTIVE_EP_STATE.store(ep_state as *const _ as *mut (), Ordering::Release);
+
         unsafe { T::Interrupt::enable() };
 
         T::add_resource_group(0);
@@ -371,6 +386,7 @@ impl<'d, T: Instance> UsbDriver<'d, T> {
             endpoints_in: [EndpointAllocData::new(Direction::In); ENDPOINT_COUNT],
             endpoints_out: [EndpointAllocData::new(Direction::Out); ENDPOINT_COUNT],
             config,
+            ep_state,
         }
     }
 
@@ -401,7 +417,7 @@ impl<'a, T: Instance> Driver<'a> for UsbDriver<'a, T> {
 
     type ControlPipe = ControlPipe<'a, T>;
 
-    type Bus = Bus<T>;
+    type Bus = Bus<'a, T>;
 
     /// Allocates an OUT endpoint.
     ///
@@ -537,6 +553,7 @@ impl<'a, T: Instance> Driver<'a> for UsbDriver<'a, T> {
             delay: McycleDelay::new(sysctl::clocks().cpu0.0),
             inited: false,
             config: self.config,
+            ep_state: self.ep_state,
         };
 
         (

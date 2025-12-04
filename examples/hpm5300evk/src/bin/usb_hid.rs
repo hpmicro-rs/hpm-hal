@@ -14,6 +14,7 @@ use embassy_usb::{Builder, Handler};
 use futures_util::future::join;
 use hpm_hal::gpio::{Input, Pull};
 use hpm_hal::peripherals;
+use hpm_hal::usb::EndpointState;
 use hpm_hal as hal;
 use static_cell::StaticCell;
 use usbd_hid::descriptor::{KeyboardReport, SerializedDescriptor};
@@ -25,11 +26,15 @@ hal::bind_interrupts!(struct Irqs {
 
 static STATE: StaticCell<State> = StaticCell::new();
 
+/// USB endpoint state - must be in non-cacheable memory for DMA access
+#[link_section = ".noncacheable"]
+static EP_STATE: EndpointState = EndpointState::new();
+
 #[embassy_executor::main(entry = "hpm_hal::entry")]
 async fn main(_spawner: Spawner) -> ! {
     let p = hal::init(Default::default());
 
-    let usb_driver = hal::usb::UsbDriver::new(p.USB0, Irqs, p.PA24, p.PA25, Default::default());
+    let usb_driver = hal::usb::UsbDriver::new(p.USB0, Irqs, p.PA24, p.PA25, Default::default(), &EP_STATE);
 
     // Create embassy-usb Config
     let mut config = embassy_usb::Config::new(0xc0de, 0xcafe);

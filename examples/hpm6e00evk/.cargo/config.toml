@@ -18,23 +18,19 @@ runner = [
 
 rustflags = [
     # Target features:
-    # The default for imacf is is "+m,+a,+c,+f"
     "-C",
     "target-feature=+zba,+zbb,+zbc,+zbs,+d,+zfh",
     # Linker scripts:
     "-C",
     "link-arg=-Tmemory.x",
     "-C",
-    "link-arg=-Tdevice.x", # __VECTORED_INTERRUPTS
+    "link-arg=-Tdevice.x",
     "-C",
-    "link-arg=-Tlink.x",
+    "link-arg=-Thpm-link.x",
     "-C",
     "link-arg=-Tdefmt.x",
     "-C",
     "link-arg=-nmagic",
-
-    # "--emit", "obj",
-    # "--emit", "asm",
 ]
 
 [unstable]

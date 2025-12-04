@@ -281,7 +281,7 @@ impl AnyChannel {
             w.set_srcaddrctrl(src_addr_ctrl);
             w.set_dstaddrctrl(dst_addr_ctrl);
 
-            if dir == Dir::MemoryToPeripheral {
+            if dir == Dir::MemoryToPeripheralType {
                 w.set_dstreqsel(mux_ch as u8);
             } else {
                 w.set_srcreqsel(mux_ch as u8);
@@ -366,7 +366,7 @@ impl AnyChannel {
 /// DMA transfer.
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct Transfer<'a> {
-    channel: PeripheralRef<'a, AnyChannel>,
+    channel: Peri<'a, AnyChannel>,
 }
 
 impl<'a> Transfer<'a> {
@@ -446,7 +446,7 @@ impl<'a> Transfer<'a> {
         Self::new_inner(
             channel.into(),
             request,
-            Dir::MemoryToPeripheral,
+            Dir::MemoryToPeripheralType,
             peri_addr as *const u32,
             repeated as *const W as *mut u32,
             count,
@@ -459,7 +459,7 @@ impl<'a> Transfer<'a> {
     // Restrictions comparing to DMA capabilities:
     // - No AddrCtrl::DECREMENT
     unsafe fn new_inner(
-        channel: PeripheralRef<'a, AnyChannel>,
+        channel: Peri<'a, AnyChannel>,
         request: Request,
         dir: Dir,
         peri_addr: *const u32,
@@ -477,7 +477,7 @@ impl<'a> Transfer<'a> {
         let mut dst_addr_ctrl = AddrCtrl::FIXED;
         let handshake;
         match dir {
-            Dir::MemoryToPeripheral => {
+            Dir::MemoryToPeripheralType => {
                 src_addr = mem_addr;
                 dst_addr = peri_addr as *mut _;
                 if incr_mem {
@@ -485,7 +485,7 @@ impl<'a> Transfer<'a> {
                 }
                 handshake = HandshakeMode::Destination; // destination trigger
             }
-            Dir::PeripheralToMemory => {
+            Dir::PeripheralTypeToMemory => {
                 src_addr = peri_addr as *mut _;
                 dst_addr = mem_addr;
                 if incr_mem {

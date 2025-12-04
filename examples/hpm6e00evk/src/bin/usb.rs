@@ -10,7 +10,7 @@ use embassy_usb::class::cdc_acm::{CdcAcmClass, Receiver, Sender, State};
 use embassy_usb::driver::EndpointError;
 use embassy_usb::Builder;
 use futures_util::future::join;
-use hal::usb::{Instance, UsbDriver};
+use hal::usb::{EndpointState, Instance, UsbDriver};
 use hpm_hal::{bind_interrupts, peripherals};
 use static_cell::StaticCell;
 use {defmt_rtt as _, hpm_hal as hal};
@@ -19,11 +19,15 @@ bind_interrupts!(struct Irqs {
     USB0 => hal::usb::InterruptHandler<peripherals::USB0>;
 });
 
+/// USB endpoint state - must be in non-cacheable memory for DMA access
+#[link_section = ".noncacheable"]
+static EP_STATE: EndpointState = EndpointState::new();
+
 #[embassy_executor::main(entry = "hpm_hal::entry")]
 async fn main(_spawner: Spawner) -> ! {
     let p = hal::init(Default::default());
 
-    let usb_driver = hal::usb::UsbDriver::new(p.USB0, Default::default());
+    let usb_driver = hal::usb::UsbDriver::new(p.USB0, Irqs, Default::default(), &EP_STATE);
 
     // Create embassy-usb Config
     let mut config = embassy_usb::Config::new(0xc0de, 0xcafe);
