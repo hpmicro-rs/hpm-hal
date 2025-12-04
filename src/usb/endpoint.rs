@@ -2,7 +2,9 @@ use core::future::poll_fn;
 use core::marker::PhantomData;
 use core::task::Poll;
 
-use embassy_usb_driver::{Direction, EndpointAddress, EndpointIn, EndpointInfo, EndpointOut};
+use embassy_usb_driver::{EndpointAddress, EndpointIn, EndpointInfo, EndpointOut};
+
+use embassy_sync::waitqueue::AtomicWaker;
 
 use super::{QTD_COUNT_EACH_QHD, get_active_ep_state, local_to_sys_address};
 use crate::usb::{EP_IN_WAKERS, EP_OUT_WAKERS, Instance};
@@ -24,25 +26,31 @@ pub(crate) struct EpConfig {
     pub(crate) max_packet_size: u16,
 }
 
-/// Direction marker trait for endpoints.
-pub trait Dir {
-    /// Get the direction value.
-    fn dir() -> Direction;
+/// Direction marker trait with direction-specific operations.
+trait Dir {
+    fn waker(i: usize) -> &'static AtomicWaker;
+    fn is_enabled(r: crate::pac::usb::Usb, i: usize) -> bool;
 }
 
 /// Marker type for IN direction (device to host).
 pub enum In {}
 impl Dir for In {
-    fn dir() -> Direction {
-        Direction::In
+    fn waker(i: usize) -> &'static AtomicWaker {
+        &EP_IN_WAKERS[i]
+    }
+    fn is_enabled(r: crate::pac::usb::Usb, i: usize) -> bool {
+        r.endptctrl(i).read().txe()
     }
 }
 
 /// Marker type for OUT direction (host to device).
 pub enum Out {}
 impl Dir for Out {
-    fn dir() -> Direction {
-        Direction::Out
+    fn waker(i: usize) -> &'static AtomicWaker {
+        &EP_OUT_WAKERS[i]
+    }
+    fn is_enabled(r: crate::pac::usb::Usb, i: usize) -> bool {
+        r.endptctrl(i).read().rxe()
     }
 }
 
@@ -191,7 +199,7 @@ impl<'d, T: Instance, D> Endpoint<'d, T, D> {
     }
 }
 
-impl<'d, T: Instance> embassy_usb_driver::Endpoint for Endpoint<'d, T, In> {
+impl<'d, T: Instance, D: Dir> embassy_usb_driver::Endpoint for Endpoint<'d, T, D> {
     fn info(&self) -> &embassy_usb_driver::EndpointInfo {
         &self.info
     }
@@ -199,35 +207,12 @@ impl<'d, T: Instance> embassy_usb_driver::Endpoint for Endpoint<'d, T, In> {
     async fn wait_enabled(&mut self) {
         let i = self.info.addr.index();
         let r = T::info().regs;
-        if r.endptctrl(i).read().txe() {
+        if D::is_enabled(r, i) {
             return;
         }
         poll_fn(|cx| {
-            EP_IN_WAKERS[i].register(cx.waker());
-            if r.endptctrl(i).read().txe() {
-                Poll::Ready(())
-            } else {
-                Poll::Pending
-            }
-        })
-        .await;
-    }
-}
-
-impl<'d, T: Instance> embassy_usb_driver::Endpoint for Endpoint<'d, T, Out> {
-    fn info(&self) -> &embassy_usb_driver::EndpointInfo {
-        &self.info
-    }
-
-    async fn wait_enabled(&mut self) {
-        let i = self.info.addr.index();
-        let r = T::info().regs;
-        if r.endptctrl(i).read().rxe() {
-            return;
-        }
-        poll_fn(|cx| {
-            EP_OUT_WAKERS[i].register(cx.waker());
-            if r.endptctrl(i).read().rxe() {
+            D::waker(i).register(cx.waker());
+            if D::is_enabled(r, i) {
                 Poll::Ready(())
             } else {
                 Poll::Pending
@@ -242,19 +227,19 @@ impl<'d, T: Instance> EndpointOut for Endpoint<'d, T, Out> {
         let r = T::info().regs;
         let ep_num = self.info.addr.index();
 
-        if !r.endptctrl(ep_num).read().rxe() {
+        if !Out::is_enabled(r, ep_num) {
             return Err(embassy_usb_driver::EndpointError::Disabled);
         }
 
         // Start read and wait
         self.transfer(buf).map_err(|_| embassy_usb_driver::EndpointError::BufferOverflow)?;
         poll_fn(|cx| {
-            EP_OUT_WAKERS[ep_num].register(cx.waker());
+            Out::waker(ep_num).register(cx.waker());
 
             if r.endptcomplete().read().erce() & (1 << ep_num) != 0 {
                 r.endptcomplete().modify(|w| w.set_erce(1 << ep_num));
                 Poll::Ready(())
-            } else if !r.endptctrl(ep_num).read().rxe() {
+            } else if !Out::is_enabled(r, ep_num) {
                 Poll::Ready(())
             } else {
                 Poll::Pending
@@ -277,18 +262,18 @@ impl<'d, T: Instance> EndpointIn for Endpoint<'d, T, In> {
         let r = T::info().regs;
         let ep_num = self.info.addr.index();
 
-        if !r.endptctrl(ep_num).read().txe() {
+        if !In::is_enabled(r, ep_num) {
             return Err(embassy_usb_driver::EndpointError::Disabled);
         }
 
         // Start write and wait
         self.transfer(buf).map_err(|_| embassy_usb_driver::EndpointError::BufferOverflow)?;
         poll_fn(|cx| {
-            EP_IN_WAKERS[ep_num].register(cx.waker());
+            In::waker(ep_num).register(cx.waker());
             if r.endptcomplete().read().etce() & (1 << ep_num) != 0 {
                 r.endptcomplete().modify(|w| w.set_etce(1 << ep_num));
                 Poll::Ready(())
-            } else if !r.endptctrl(ep_num).read().txe() {
+            } else if !In::is_enabled(r, ep_num) {
                 Poll::Ready(())
             } else {
                 Poll::Pending
@@ -300,7 +285,7 @@ impl<'d, T: Instance> EndpointIn for Endpoint<'d, T, In> {
         if buf.len() == self.info.max_packet_size as usize {
             let _ = self.transfer(&[]);
             poll_fn(|cx| {
-                EP_IN_WAKERS[ep_num].register(cx.waker());
+                In::waker(ep_num).register(cx.waker());
                 if r.endptcomplete().read().etce() & (1 << ep_num) != 0 {
                     r.endptcomplete().modify(|w| w.set_etce(1 << ep_num));
                     Poll::Ready(())
