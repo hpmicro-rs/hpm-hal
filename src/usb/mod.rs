@@ -20,6 +20,57 @@ use types_v62 as types;
 use crate::interrupt::typelevel::Interrupt as _;
 use crate::sysctl;
 
+/// Convert local memory address to system bus address for USB DMA access.
+///
+/// For single-core chips (HPM5300, HPM6300, etc.), this is identity function.
+/// For dual-core chips (HPM6750), DLM/ILM addresses need to be converted to system addresses.
+///
+/// Reference: HPMicro C SDK `hpm_misc.h` - `core_local_mem_to_sys_address()`
+#[inline]
+#[cfg(not(hpm67))]
+pub(crate) fn local_to_sys_address(addr: u32) -> u32 {
+    // Single-core chips: identity function
+    // HPM5300, HPM6200, HPM6300, HPM6800, HPM6E00
+    addr
+}
+
+/// Convert local memory address to system bus address for USB DMA access.
+///
+/// HPM6750 is dual-core, DLM/ILM local addresses need to be converted to system addresses.
+///
+/// Memory map (HPM6750):
+/// - ILM local: 0x0000_0000 - 0x0004_0000 (256KB)
+/// - DLM local: 0x0008_0000 - 0x000C_0000 (256KB)
+/// - Core0 ILM system: 0x0100_0000
+/// - Core0 DLM system: 0x0104_0000
+/// - Core1 ILM system: 0x0118_0000
+/// - Core1 DLM system: 0x011C_0000
+///
+/// Reference: HPMicro C SDK `hpm_misc.h` - `core_local_mem_to_sys_address()`
+#[inline]
+#[cfg(hpm67)]
+pub(crate) fn local_to_sys_address(addr: u32) -> u32 {
+    const ILM_LOCAL_BASE: u32 = 0x0;
+    const ILM_SIZE: u32 = 0x4_0000; // 256KB
+    const DLM_LOCAL_BASE: u32 = 0x8_0000;
+    const DLM_SIZE: u32 = 0x4_0000; // 256KB
+    const CORE0_ILM_SYSTEM_BASE: u32 = 0x100_0000;
+    const CORE0_DLM_SYSTEM_BASE: u32 = 0x104_0000;
+
+    // Check if address is in ILM local range
+    if addr < ILM_SIZE {
+        return CORE0_ILM_SYSTEM_BASE + addr;
+    }
+
+    // Check if address is in DLM local range
+    if addr >= DLM_LOCAL_BASE && addr < DLM_LOCAL_BASE + DLM_SIZE {
+        return CORE0_DLM_SYSTEM_BASE + (addr - DLM_LOCAL_BASE);
+    }
+
+    // Address is already system address or in other region
+    addr
+}
+
 mod bus;
 mod control_pipe;
 mod endpoint;
@@ -47,16 +98,27 @@ const QHD_ITEM_SIZE: usize = 64;
 const QTD_ITEM_SIZE: usize = 32;
 
 /// FIXME: Better way to handle the ehci data, ref: https://github.com/imxrt-rs/imxrt-usbd/blob/master/src/lib.rs
+///
+/// USB DCD data must be placed in non-cacheable memory region because:
+/// - USB controller is a DMA master that directly accesses memory
+/// - CPU cache and DMA data must be consistent
+/// See: HPMicro C SDK `dcd_hpm.c` uses `ATTR_PLACE_AT_NONCACHEABLE_WITH_ALIGNMENT`
+#[unsafe(link_section = ".noncacheable")]
 static mut QHD_LIST_DATA: QhdListData = QhdListData([0; QHD_ITEM_SIZE * ENDPOINT_COUNT * 2]);
+#[unsafe(link_section = ".noncacheable")]
 static mut QTD_LIST_DATA: QtdListData = QtdListData([0; QTD_ITEM_SIZE * ENDPOINT_COUNT * 2 * QTD_COUNT_EACH_QHD]);
 static mut DCD_DATA: DcdData = DcdData {
     qhd_list: unsafe { QhdList::from_ptr(QHD_LIST_DATA.0.as_ptr() as *mut _) },
     qtd_list: unsafe { QtdList::from_ptr(QTD_LIST_DATA.0.as_ptr() as *mut _) },
 };
 
+/// QHD list data structure with 2048-byte alignment requirement
+/// Placed in non-cacheable memory for DMA access
 #[repr(C, align(2048))]
 pub(crate) struct QhdListData([u8; QHD_ITEM_SIZE * ENDPOINT_COUNT * 2]);
 
+/// QTD list data structure with 32-byte alignment requirement
+/// Placed in non-cacheable memory for DMA access
 #[repr(C, align(32))]
 pub(crate) struct QtdListData([u8; QTD_ITEM_SIZE * ENDPOINT_COUNT * 2 * QTD_COUNT_EACH_QHD]);
 
@@ -181,11 +243,15 @@ impl Qtd {
             return;
         }
 
+        // Convert buffer address to system address for DMA access
+        // Reference: HPMicro C SDK uses core_local_mem_to_sys_address() for buffer
+        let sys_addr = local_to_sys_address(data.as_ptr() as u32);
+
         // Fill data into qtd
         self.buffer(0)
-            .modify(|w| w.set_buffer((data.as_ptr() as u32 & 0xFFFFF000) >> 12));
+            .modify(|w| w.set_buffer((sys_addr & 0xFFFFF000) >> 12));
         self.current_offset()
-            .modify(|w| w.set_current_offset((data.as_ptr() as u32 & 0x00000FFF) as u16));
+            .modify(|w| w.set_current_offset((sys_addr & 0x00000FFF) as u16));
 
         for i in 1..QHD_BUFFER_COUNT {
             // Fill address of next 4K bytes, note the addr is already shifted, so we just +1
