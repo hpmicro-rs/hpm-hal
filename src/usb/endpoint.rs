@@ -4,7 +4,7 @@ use core::task::Poll;
 
 use embassy_usb_driver::{EndpointAddress, EndpointIn, EndpointInfo, EndpointOut};
 
-use super::{DCD_DATA, QTD_COUNT_EACH_QHD};
+use super::{DCD_DATA, QTD_COUNT_EACH_QHD, local_to_sys_address};
 use crate::usb::{EP_IN_WAKERS, EP_OUT_WAKERS, Instance};
 
 pub(crate) struct EpConfig {
@@ -53,9 +53,6 @@ impl<'d, T: Instance> Endpoint<'d, T> {
             return Err(());
         }
 
-        // TODO: Convert data's address to coressponding core
-        // data = core_local_mem_to_sys_address(data);
-
         // Add all data to the circular queue
         let mut prev_qtd: Option<usize> = None;
         let mut first_qtd: Option<usize> = None;
@@ -75,10 +72,7 @@ impl<'d, T: Instance> Endpoint<'d, T> {
                 data.len()
             };
 
-            // TODO: Convert data's address to coressponding core
-            // Check hpm_sdk: static inline uint32_t core_local_mem_to_sys_address()
-
-            // Initialize qtd with the data
+            // Initialize qtd with the data (address conversion is done inside reinit_with)
             unsafe {
                 DCD_DATA
                     .qtd_list
@@ -96,13 +90,15 @@ impl<'d, T: Instance> Endpoint<'d, T> {
             data_offset += transfer_bytes;
 
             // Set qtd linked list
+            // Note: C SDK does NOT convert QTD->QTD address, only QHD->QTD address
             if let Some(prev_qtd) = prev_qtd {
                 unsafe {
+                    let qtd_addr = DCD_DATA.qtd_list.qtd(qtd_idx).as_ptr() as u32;
                     DCD_DATA
                         .qtd_list
                         .qtd(prev_qtd)
                         .next_dtd()
-                        .modify(|w| w.set_next_dtd_addr(DCD_DATA.qtd_list.qtd(qtd_idx).as_ptr() as u32 >> 5));
+                        .modify(|w| w.set_next_dtd_addr(qtd_addr >> 5));
                 }
             } else {
                 first_qtd = Some(qtd_idx);
@@ -116,7 +112,7 @@ impl<'d, T: Instance> Endpoint<'d, T> {
             }
         }
 
-        // Link qtd to qhd
+        // Link qtd to qhd (convert to system address for DMA)
         let first_idx = first_qtd.unwrap();
 
         unsafe {
@@ -125,8 +121,9 @@ impl<'d, T: Instance> Endpoint<'d, T> {
                     w.set_ios(true);
                 });
             }
+            let qtd_addr = local_to_sys_address(DCD_DATA.qtd_list.qtd(first_idx).as_ptr() as u32);
             DCD_DATA.qhd_list.qhd(ep_idx).next_dtd().modify(|w| {
-                w.set_next_dtd_addr(DCD_DATA.qtd_list.qtd(first_idx).as_ptr() as u32 >> 5);
+                w.set_next_dtd_addr(qtd_addr >> 5);
                 // T **MUST** be set to 0
                 w.set_t(false);
             });
