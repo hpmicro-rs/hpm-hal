@@ -82,6 +82,9 @@ pub mod rng;
 #[cfg(trgm)]
 pub mod trgm;
 
+#[cfg(wdg)]
+pub mod ewdg;
+
 #[cfg(feature = "rt")]
 pub use hpm_riscv_rt::{entry, external_interrupt, fast, pre_init};
 
