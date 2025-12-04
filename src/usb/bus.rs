@@ -9,7 +9,7 @@ use hpm_metapac::usb::regs::*;
 use riscv::delay::McycleDelay;
 
 use super::{ENDPOINT_COUNT, EP_IN_WAKERS, EP_OUT_WAKERS, Instance, init_qhd, local_to_sys_address};
-use crate::usb::{BUS_WAKER, DCD_DATA, EpConfig, IRQ_RESET, IRQ_SUSPEND, IRQ_VBUS_CHANGE, reset_dcd_data};
+use crate::usb::{BUS_WAKER, Config, DCD_DATA, EpConfig, IRQ_RESET, IRQ_SUSPEND, IRQ_VBUS_CHANGE, reset_dcd_data};
 
 /// USB bus
 pub struct Bus<T: Instance> {
@@ -18,6 +18,7 @@ pub struct Bus<T: Instance> {
     pub(crate) endpoints_in: [EndpointInfo; ENDPOINT_COUNT],
     pub(crate) delay: McycleDelay,
     pub(crate) inited: bool,
+    pub(crate) config: Config,
 }
 
 /// Implement the `embassy_usb_driver::Bus` trait for `Bus`.
@@ -195,11 +196,18 @@ impl<T: Instance> embassy_usb_driver::Bus for Bus<T> {
 
     /// Initiate a remote wakeup of the host by the device.
     ///
-    /// # Errors
-    ///
-    /// * [`Unsupported`](crate::Unsupported) - This UsbBus implementation doesn't support
-    ///   remote wakeup or it has not been enabled at creation time.
+    /// This sets the Force Port Resume (FPR) bit in PORTSC1, which causes
+    /// the device to drive resume signaling on the bus. The bit is automatically
+    /// cleared by hardware when the resume sequence is complete.
     async fn remote_wakeup(&mut self) -> Result<(), Unsupported> {
+        let r = T::info().regs;
+
+        // Set Force Port Resume bit
+        r.portsc1().modify(|w| w.set_fpr(true));
+
+        // Wait for hardware to complete resume sequence and clear FPR
+        while r.portsc1().read().fpr() {}
+
         Ok(())
     }
 }
@@ -337,8 +345,8 @@ impl<T: Instance> Bus<T> {
             w.set_sts(false);
             // Parallel transceiver width
             w.set_ptw(false);
-            // Forced fullspeed mode
-            // w.set_pfsc(true);
+            // Force Full-Speed mode if configured
+            w.set_pfsc(self.config.force_full_speed);
         });
 
         // Do not use interrupt threshold

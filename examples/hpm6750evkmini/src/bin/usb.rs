@@ -55,7 +55,7 @@ async fn main(_spawner: Spawner) -> ! {
     let uart = hal::uart::Uart::new_blocking(r.uart.uart, r.uart.rx, r.uart.tx, Default::default()).unwrap();
     unsafe { UART = Some(uart) };
 
-    let usb_driver = hal::usb::UsbDriver::new(p.USB0);
+    let usb_driver = hal::usb::UsbDriver::new(p.USB0, Default::default());
 
     // Create embassy-usb Config
     let mut config = embassy_usb::Config::new(0xc0de, 0xcafe);
