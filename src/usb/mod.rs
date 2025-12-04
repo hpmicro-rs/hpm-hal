@@ -228,10 +228,11 @@ impl Qtd {
         // However, buffer[1-4] cannot be set with an offset, so they MUST be 4K bytes aligned.
         // That's why the buffer[1-4] is filled with a `& 0xFFFFF000`.
         // To be convenient, if the data length is larger than 4K, we require the data address to be 4K bytes aligned.
-        if transfer_bytes > 0x1000 && data.as_ptr() as u32 % 0x1000 != 0 {
-            // defmt::error!("The buffer[1-4] must be 4K bytes aligned");
-            return;
-        }
+        // Note: Caller (transfer()) already checks alignment and returns TransferError::BufferAlignment
+        debug_assert!(
+            transfer_bytes <= 0x1000 || data.as_ptr() as u32 % 0x1000 == 0,
+            "Buffer must be 4K aligned for transfers >4K"
+        );
 
         if transfer_bytes < 0x4000 {
             self.next_dtd().modify(|w| w.set_t(true));

@@ -7,6 +7,16 @@ use embassy_usb_driver::{EndpointAddress, EndpointIn, EndpointInfo, EndpointOut}
 use super::{DCD_DATA, QTD_COUNT_EACH_QHD, local_to_sys_address};
 use crate::usb::{EP_IN_WAKERS, EP_OUT_WAKERS, Instance};
 
+/// USB transfer error types
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum TransferError {
+    /// Transfer size exceeds maximum (>128KB, needs >8 QTDs)
+    BufferTooLarge,
+    /// Buffer alignment requirement not met (>4K data needs 4K alignment)
+    BufferAlignment,
+}
+
 pub(crate) struct EpConfig {
     /// Endpoint type
     pub(crate) transfer: u8,
@@ -35,8 +45,11 @@ impl<'d, T: Instance> Endpoint<'d, T> {
     }
 
     /// Schedule the transfer
-    /// TODO: Add typed error
-    pub(crate) fn transfer(&mut self, data: &[u8]) -> Result<(), ()> {
+    ///
+    /// # Errors
+    /// - `TransferError::BufferTooLarge` - Data exceeds 128KB (needs >8 QTDs)
+    /// - `TransferError::BufferAlignment` - Data >4K but not 4K-aligned
+    pub(crate) fn transfer(&mut self, data: &[u8]) -> Result<(), TransferError> {
         let r = T::info().regs;
 
         let ep_num = self.info.addr.index();
@@ -48,9 +61,15 @@ impl<'d, T: Instance> Endpoint<'d, T> {
             while (r.endptsetupstat().read().endptsetupstat() & 0b1) == 1 {}
         }
 
+        // Check transfer size limit (8 QTDs * 16KB each = 128KB max)
         let qtd_num = (data.len() + 0x3FFF) / 0x4000;
         if qtd_num > 8 {
-            return Err(());
+            return Err(TransferError::BufferTooLarge);
+        }
+
+        // Check alignment for >4K transfers (buffer[1-4] must be 4K aligned)
+        if data.len() > 0x1000 && (data.as_ptr() as usize) % 0x1000 != 0 {
+            return Err(TransferError::BufferAlignment);
         }
 
         // Add all data to the circular queue
@@ -200,7 +219,7 @@ impl<'d, T: Instance> EndpointOut for Endpoint<'d, T> {
         let ep_num = self.info.addr.index();
 
         // Start read and wait
-        self.transfer(buf).unwrap();
+        self.transfer(buf).map_err(|_| embassy_usb_driver::EndpointError::BufferOverflow)?;
         poll_fn(|cx| {
             EP_OUT_WAKERS[ep_num].register(cx.waker());
 
@@ -234,7 +253,7 @@ impl<'d, T: Instance> EndpointIn for Endpoint<'d, T> {
         let ep_num = self.info.addr.index();
 
         // Start write and wait
-        self.transfer(buf).unwrap();
+        self.transfer(buf).map_err(|_| embassy_usb_driver::EndpointError::BufferOverflow)?;
         poll_fn(|cx| {
             EP_IN_WAKERS[ep_num].register(cx.waker());
             // It's IN endpoint, so check the etce
@@ -251,7 +270,8 @@ impl<'d, T: Instance> EndpointIn for Endpoint<'d, T> {
 
         // Send zlt packet(if needed)
         if buf.len() == self.info.max_packet_size as usize {
-            self.transfer(&[]).unwrap();
+            // ZLT with empty buffer never fails (no alignment/size issues)
+            let _ = self.transfer(&[]);
             poll_fn(|cx| {
                 EP_IN_WAKERS[ep_num].register(cx.waker());
                 if r.endptcomplete().read().etce() & (1 << ep_num) != 0 {
