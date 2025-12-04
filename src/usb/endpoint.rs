@@ -2,7 +2,7 @@ use core::future::poll_fn;
 use core::marker::PhantomData;
 use core::task::Poll;
 
-use embassy_usb_driver::{EndpointAddress, EndpointIn, EndpointInfo, EndpointOut};
+use embassy_usb_driver::{Direction, EndpointAddress, EndpointIn, EndpointInfo, EndpointOut};
 
 use super::{DCD_DATA, QTD_COUNT_EACH_QHD, local_to_sys_address};
 use crate::usb::{EP_IN_WAKERS, EP_OUT_WAKERS, Instance};
@@ -24,13 +24,36 @@ pub(crate) struct EpConfig {
     pub(crate) max_packet_size: u16,
 }
 
+/// Direction marker trait for endpoints.
+pub trait Dir {
+    /// Get the direction value.
+    fn dir() -> Direction;
+}
+
+/// Marker type for IN direction (device to host).
+pub enum In {}
+impl Dir for In {
+    fn dir() -> Direction {
+        Direction::In
+    }
+}
+
+/// Marker type for OUT direction (host to device).
+pub enum Out {}
+impl Dir for Out {
+    fn dir() -> Direction {
+        Direction::Out
+    }
+}
+
+/// USB endpoint with direction type parameter.
 #[derive(Copy, Clone)]
-pub struct Endpoint<'d, T: Instance> {
-    pub(crate) _phantom: PhantomData<&'d mut T>,
+pub struct Endpoint<'d, T: Instance, D> {
+    pub(crate) _phantom: PhantomData<(&'d mut T, D)>,
     pub(crate) info: EndpointInfo,
 }
 
-impl<'d, T: Instance> Endpoint<'d, T> {
+impl<'d, T: Instance, D> Endpoint<'d, T, D> {
     pub(crate) fn start_transfer(&mut self) {
         let ep_num = self.info.addr.index();
 
@@ -162,61 +185,62 @@ impl<'d, T: Instance> Endpoint<'d, T> {
             r.endptctrl(self.info.addr.index() as usize).modify(|w| w.set_rxs(true));
         }
     }
-
-    pub(crate) fn enabled(&self) -> bool {
-        let r = T::info().regs;
-        let ep_num = self.info.addr.index();
-        if self.info.addr.is_in() {
-            r.endptctrl(ep_num).read().txe()
-        } else {
-            r.endptctrl(ep_num).read().rxe()
-        }
-    }
 }
 
-impl<'d, T: Instance> embassy_usb_driver::Endpoint for Endpoint<'d, T> {
-    /// Get the endpoint address
+impl<'d, T: Instance> embassy_usb_driver::Endpoint for Endpoint<'d, T, In> {
     fn info(&self) -> &embassy_usb_driver::EndpointInfo {
         &self.info
     }
 
-    /// Wait for the endpoint to be enabled.
     async fn wait_enabled(&mut self) {
-        if self.enabled() {
+        let i = self.info.addr.index();
+        let r = T::info().regs;
+        if r.endptctrl(i).read().txe() {
             return;
         }
-        let i = self.info.addr.index();
         poll_fn(|cx| {
-            let r = T::info().regs;
-            // Check if the endpoint is enabled
-            if self.info.addr.is_in() {
-                EP_IN_WAKERS[i].register(cx.waker());
-                if r.endptctrl(i).read().txe() {
-                    return Poll::Ready(());
-                }
+            EP_IN_WAKERS[i].register(cx.waker());
+            if r.endptctrl(i).read().txe() {
+                Poll::Ready(())
             } else {
-                EP_OUT_WAKERS[i].register(cx.waker());
-                if r.endptctrl(i).read().rxe() {
-                    return Poll::Ready(());
-                }
+                Poll::Pending
             }
-            Poll::Pending
         })
         .await;
     }
 }
 
-impl<'d, T: Instance> EndpointOut for Endpoint<'d, T> {
-    /// Read a single packet of data from the endpoint, and return the actual length of
-    /// the packet.
-    ///
-    /// This should also clear any NAK flags and prepare the endpoint to receive the next packet.
-    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, embassy_usb_driver::EndpointError> {
-        if !self.enabled() {
-            return Err(embassy_usb_driver::EndpointError::Disabled);
+impl<'d, T: Instance> embassy_usb_driver::Endpoint for Endpoint<'d, T, Out> {
+    fn info(&self) -> &embassy_usb_driver::EndpointInfo {
+        &self.info
+    }
+
+    async fn wait_enabled(&mut self) {
+        let i = self.info.addr.index();
+        let r = T::info().regs;
+        if r.endptctrl(i).read().rxe() {
+            return;
         }
+        poll_fn(|cx| {
+            EP_OUT_WAKERS[i].register(cx.waker());
+            if r.endptctrl(i).read().rxe() {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        })
+        .await;
+    }
+}
+
+impl<'d, T: Instance> EndpointOut for Endpoint<'d, T, Out> {
+    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, embassy_usb_driver::EndpointError> {
         let r = T::info().regs;
         let ep_num = self.info.addr.index();
+
+        if !r.endptctrl(ep_num).read().rxe() {
+            return Err(embassy_usb_driver::EndpointError::Disabled);
+        }
 
         // Start read and wait
         self.transfer(buf).map_err(|_| embassy_usb_driver::EndpointError::BufferOverflow)?;
@@ -224,7 +248,6 @@ impl<'d, T: Instance> EndpointOut for Endpoint<'d, T> {
             EP_OUT_WAKERS[ep_num].register(cx.waker());
 
             if r.endptcomplete().read().erce() & (1 << ep_num) != 0 {
-                // Clear the flag
                 r.endptcomplete().modify(|w| w.set_erce(1 << ep_num));
                 Poll::Ready(())
             } else if !r.endptctrl(ep_num).read().rxe() {
@@ -235,28 +258,26 @@ impl<'d, T: Instance> EndpointOut for Endpoint<'d, T> {
         })
         .await;
 
-        // Get the actual length of the packet
-        let ep_num = self.info.addr.index();
-        let ep_idx = 2 * ep_num + self.info.addr.is_in() as usize;
+        // Get the actual length of the packet (OUT endpoint: ep_idx = 2 * ep_num)
+        let ep_idx = 2 * ep_num;
         let len = unsafe { DCD_DATA.qhd_list.qhd(ep_idx).qtd_token().read().total_bytes() as usize };
         Ok(buf.len() - len)
     }
 }
 
-impl<'d, T: Instance> EndpointIn for Endpoint<'d, T> {
-    /// Write a single packet of data to the endpoint.
+impl<'d, T: Instance> EndpointIn for Endpoint<'d, T, In> {
     async fn write(&mut self, buf: &[u8]) -> Result<(), embassy_usb_driver::EndpointError> {
-        if !self.enabled() {
-            return Err(embassy_usb_driver::EndpointError::Disabled);
-        }
         let r = T::info().regs;
         let ep_num = self.info.addr.index();
+
+        if !r.endptctrl(ep_num).read().txe() {
+            return Err(embassy_usb_driver::EndpointError::Disabled);
+        }
 
         // Start write and wait
         self.transfer(buf).map_err(|_| embassy_usb_driver::EndpointError::BufferOverflow)?;
         poll_fn(|cx| {
             EP_IN_WAKERS[ep_num].register(cx.waker());
-            // It's IN endpoint, so check the etce
             if r.endptcomplete().read().etce() & (1 << ep_num) != 0 {
                 r.endptcomplete().modify(|w| w.set_etce(1 << ep_num));
                 Poll::Ready(())
@@ -270,7 +291,6 @@ impl<'d, T: Instance> EndpointIn for Endpoint<'d, T> {
 
         // Send zlt packet(if needed)
         if buf.len() == self.info.max_packet_size as usize {
-            // ZLT with empty buffer never fails (no alignment/size issues)
             let _ = self.transfer(&[]);
             poll_fn(|cx| {
                 EP_IN_WAKERS[ep_num].register(cx.waker());

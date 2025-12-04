@@ -12,6 +12,7 @@ use embassy_usb::Builder;
 use futures_util::future::join;
 use hal::usb::{Instance, UsbDriver};
 use hpm_hal::peripherals;
+use static_cell::StaticCell;
 use {defmt_rtt as _, hpm_hal as hal};
 
 hal::bind_interrupts!(struct Irqs {
@@ -39,23 +40,23 @@ async fn main(_spawner: Spawner) -> ! {
 
     // Create embassy-usb DeviceBuilder using the driver and config.
     // It needs some buffers for building the descriptors.
-    let mut config_descriptor = [0; 256];
-    let mut bos_descriptor = [0; 256];
-    let mut control_buf = [0; 64];
-
-    let mut state = State::new();
+    // Use StaticCell to ensure buffer addresses remain stable across await points.
+    static CONFIG_DESC: StaticCell<[u8; 256]> = StaticCell::new();
+    static BOS_DESC: StaticCell<[u8; 256]> = StaticCell::new();
+    static CONTROL_BUF: StaticCell<[u8; 64]> = StaticCell::new();
+    static CDC_STATE: StaticCell<State> = StaticCell::new();
 
     let mut builder = Builder::new(
         usb_driver,
         config,
-        &mut config_descriptor,
-        &mut bos_descriptor,
+        CONFIG_DESC.init([0; 256]),
+        BOS_DESC.init([0; 256]),
         &mut [], // no msos descriptors
-        &mut control_buf,
+        CONTROL_BUF.init([0; 64]),
     );
 
     // Create classes on the builder.
-    let class = CdcAcmClass::new(&mut builder, &mut state, 64);
+    let class = CdcAcmClass::new(&mut builder, CDC_STATE.init(State::new()), 64);
 
     // Build the builder.
     let mut usb = builder.build();

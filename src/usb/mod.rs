@@ -395,9 +395,9 @@ impl<'d, T: Instance> UsbDriver<'d, T> {
 
 /// Implement `embassy_usb_driver::Driver` for `UsbDriver`
 impl<'a, T: Instance> Driver<'a> for UsbDriver<'a, T> {
-    type EndpointOut = Endpoint<'a, T>;
+    type EndpointOut = Endpoint<'a, T, endpoint::Out>;
 
-    type EndpointIn = Endpoint<'a, T>;
+    type EndpointIn = Endpoint<'a, T, endpoint::In>;
 
     type ControlPipe = ControlPipe<'a, T>;
 
