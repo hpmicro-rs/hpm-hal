@@ -144,12 +144,15 @@ fn main() {
     }
 
     // Time driver selection
-    if env::var("CARGO_FEATURE_TIME_DRIVER_GPTMR0").is_ok() {
+    let time_driver_gptmr = if env::var("CARGO_FEATURE_TIME_DRIVER_GPTMR0").is_ok() {
         cfgs.enable("time_driver_gptmr0");
-    }
-    if env::var("CARGO_FEATURE_TIME_DRIVER_GPTMR1").is_ok() {
+        Some("GPTMR0")
+    } else if env::var("CARGO_FEATURE_TIME_DRIVER_GPTMR1").is_ok() {
         cfgs.enable("time_driver_gptmr1");
-    }
+        Some("GPTMR1")
+    } else {
+        None
+    };
 
     for p in METADATA.peripherals {
         if let Some(r) = &p.registers {
@@ -191,13 +194,19 @@ fn main() {
 
     let mut g = TokenStream::new();
 
+    // All singletons for peripherals_definition
     let singleton_tokens: Vec<_> = singletons.iter().map(|s| format_ident!("{}", s)).collect();
 
     g.extend(quote! {
         embassy_hal_internal::peripherals_definition!(#(#singleton_tokens),*);
     });
 
-    let singleton_tokens: Vec<_> = singletons.iter().map(|s| format_ident!("{}", s)).collect();
+    // For peripherals_struct, exclude the time driver peripheral (if using GPTMR)
+    let singleton_tokens: Vec<_> = singletons
+        .iter()
+        .filter(|s| time_driver_gptmr.map_or(true, |td| *s != td))
+        .map(|s| format_ident!("{}", s))
+        .collect();
 
     g.extend(quote! {
         embassy_hal_internal::peripherals_struct!(#(#singleton_tokens),*);
@@ -524,6 +533,29 @@ fn main() {
     g.extend(quote! {
         pub(crate) const DMA_CHANNELS: &[crate::dma::ChannelInfo] = &[#dmas];
     });
+
+    // ========
+    // Generate GPTMR time driver interrupt handler
+    if let Some(gptmr_name) = time_driver_gptmr {
+        // Find the interrupt for this GPTMR
+        for p in METADATA.peripherals {
+            if p.name == gptmr_name {
+                for irq in p.interrupts {
+                    let irq_name = format_ident!("{}", irq.interrupt);
+                    g.extend(quote! {
+                        #[cfg(feature = "rt")]
+                        #[hpm_riscv_rt::external_interrupt(hpm_metapac::interrupt::#irq_name)]
+                        fn #irq_name() {
+                            use crate::interrupt::InterruptExt;
+                            crate::embassy::time_driver_impl::on_interrupt();
+                            crate::interrupt::#irq_name.complete();
+                        }
+                    });
+                }
+                break;
+            }
+        }
+    }
 
     for p in METADATA.peripherals {
         let Some(regs) = &p.registers else {

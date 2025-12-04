@@ -297,21 +297,7 @@ pub(crate) fn init(cs: CriticalSection) {
     DRIVER.init(cs);
 }
 
-// GPTMR interrupt handler
-#[cfg(all(feature = "rt", time_driver_gptmr0))]
-#[crate::external_interrupt(crate::pac::Interrupt::GPTMR0)]
-#[allow(non_snake_case)]
-unsafe fn GPTMR0() {
-    use crate::interrupt::InterruptExt;
+/// Called from auto-generated interrupt handler in build.rs
+pub(crate) fn on_interrupt() {
     DRIVER.on_interrupt();
-    crate::interrupt::GPTMR0.complete();
-}
-
-#[cfg(all(feature = "rt", time_driver_gptmr1))]
-#[crate::external_interrupt(crate::pac::Interrupt::GPTMR1)]
-#[allow(non_snake_case)]
-unsafe fn GPTMR1() {
-    use crate::interrupt::InterruptExt;
-    DRIVER.on_interrupt();
-    crate::interrupt::GPTMR1.complete();
 }
