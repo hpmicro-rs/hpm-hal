@@ -10,7 +10,7 @@ use embedded_hal::delay::DelayNs;
 use endpoint::{Endpoint, EpConfig};
 use hpm_metapac::usb::regs::Usbsts;
 use riscv::delay::McycleDelay;
-use types::{Qhd, QhdList, Qtd, QtdList};
+use types::{Qhd, Qtd};
 #[cfg(any(hpm53, hpm68, hpm6e))]
 use types_v53 as types;
 #[cfg(any(hpm67, hpm63, hpm62))]
@@ -265,8 +265,7 @@ impl Qtd {
         let sys_addr = local_to_sys_address(data.as_ptr() as u32);
 
         // Fill data into qtd
-        self.buffer(0)
-            .modify(|w| w.set_buffer((sys_addr & 0xFFFFF000) >> 12));
+        self.buffer(0).modify(|w| w.set_buffer((sys_addr & 0xFFFFF000) >> 12));
         self.current_offset()
             .modify(|w| w.set_current_offset((sys_addr & 0x00000FFF) as u16));
 
@@ -339,7 +338,10 @@ impl<'d, T: Instance> UsbDriver<'d, T> {
         ep_state: &'d EndpointState,
     ) -> Self {
         // Runtime singleton check
-        assert!(ep_state.try_acquire(), "EndpointState is already in use by another USB driver");
+        assert!(
+            ep_state.try_acquire(),
+            "EndpointState is already in use by another USB driver"
+        );
 
         // Store the active ep_state pointer for Endpoint access
         ACTIVE_EP_STATE.store(ep_state as *const _ as *mut (), Ordering::Release);
