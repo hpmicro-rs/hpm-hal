@@ -68,6 +68,10 @@ pub mod adc;
 #[cfg(dac)]
 pub mod dac;
 
+// timer peripherals
+#[cfg(tmr)]
+pub mod timer;
+
 // motor control peripherals
 #[cfg(qei)]
 pub mod qei;
