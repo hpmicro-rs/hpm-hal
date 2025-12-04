@@ -73,6 +73,8 @@ pub mod dac;
 pub mod timer;
 
 // motor control peripherals
+#[cfg(pwm)]
+pub mod pwm;
 #[cfg(qei)]
 pub mod qei;
 #[cfg(rng)]
