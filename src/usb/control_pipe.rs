@@ -5,14 +5,14 @@ use embassy_usb_driver::EndpointError;
 use futures_util::future::poll_fn;
 
 use super::Instance;
-use super::endpoint::Endpoint;
+use super::endpoint::{Endpoint, In, Out};
 use crate::usb::{DCD_DATA, EP_IN_WAKERS, EP_OUT_WAKERS};
 
 pub struct ControlPipe<'d, T: Instance> {
     pub(crate) _phantom: PhantomData<&'d mut T>,
     pub(crate) max_packet_size: usize,
-    pub(crate) ep_in: Endpoint<'d, T>,
-    pub(crate) ep_out: Endpoint<'d, T>,
+    pub(crate) ep_in: Endpoint<'d, T, In>,
+    pub(crate) ep_out: Endpoint<'d, T, Out>,
 }
 
 impl<'d, T: Instance> embassy_usb_driver::ControlPipe for ControlPipe<'d, T> {
