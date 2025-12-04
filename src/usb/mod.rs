@@ -81,6 +81,7 @@ mod types_v62;
 
 static IRQ_RESET: AtomicBool = AtomicBool::new(false);
 static IRQ_SUSPEND: AtomicBool = AtomicBool::new(false);
+static IRQ_VBUS_CHANGE: AtomicBool = AtomicBool::new(false);
 
 const AW_NEW: AtomicWaker = AtomicWaker::new();
 static EP_IN_WAKERS: [AtomicWaker; ENDPOINT_COUNT] = [AW_NEW; ENDPOINT_COUNT];
@@ -624,13 +625,6 @@ pub unsafe fn on_interrupt<T: Instance>() {
     if status.ui() {
         // Disable USB transfer interrupt
         r.usbintr().modify(|w| w.set_ue(false));
-        // defmt::info!(
-        //     "Transfer complete interrupt: endptstat: {:b}, endptsetupstat: {:b}, endptcomplete_receive: {:b}, endptcomplete_send: {:b}",
-        //     r.endptstat().read().0,
-        //     r.endptsetupstat().read().0,
-        //     r.endptcomplete().read().erce(),
-        //     r.endptcomplete().read().etce(),
-        // );
 
         // If it's a setup packet, wake the EP OUT 0
         if r.endptsetupstat().read().endptsetupstat() > 0 {
@@ -652,6 +646,16 @@ pub unsafe fn on_interrupt<T: Instance>() {
         }
         // Re-enable USB transfer interrupt
         r.usbintr().modify(|w| w.set_ue(true));
+    }
+
+    // VBUS change detection (OTGSC register, independent of USBSTS)
+    let otgsc = r.otgsc().read();
+    if otgsc.asvis() {
+        // Clear A Session Valid Interrupt Status (write 1 to clear)
+        r.otgsc().modify(|w| w.set_asvis(true));
+        // Signal VBUS change
+        IRQ_VBUS_CHANGE.store(true, Ordering::Relaxed);
+        BUS_WAKER.wake();
     }
 }
 

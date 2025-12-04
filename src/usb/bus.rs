@@ -9,7 +9,7 @@ use hpm_metapac::usb::regs::*;
 use riscv::delay::McycleDelay;
 
 use super::{ENDPOINT_COUNT, EP_IN_WAKERS, EP_OUT_WAKERS, Instance, init_qhd, local_to_sys_address};
-use crate::usb::{BUS_WAKER, DCD_DATA, EpConfig, IRQ_RESET, IRQ_SUSPEND, reset_dcd_data};
+use crate::usb::{BUS_WAKER, DCD_DATA, EpConfig, IRQ_RESET, IRQ_SUSPEND, IRQ_VBUS_CHANGE, reset_dcd_data};
 
 /// USB bus
 pub struct Bus<T: Instance> {
@@ -46,6 +46,12 @@ impl<T: Instance> embassy_usb_driver::Bus for Bus<T> {
                 w.set_pce(true);
                 w.set_ure(true);
             });
+
+            // Enable VBUS change interrupt (A Session Valid Interrupt Enable)
+            r.otgsc().modify(|w| {
+                w.set_asvis(true); // Clear any pending status first
+                w.set_asvie(true); // Enable interrupt
+            });
         }
 
         // Start to run usb device
@@ -66,10 +72,26 @@ impl<T: Instance> embassy_usb_driver::Bus for Bus<T> {
             BUS_WAKER.register(cx.waker());
             let r = T::info().regs;
 
-            // TODO: implement VBUS detection.
+            // Initial VBUS detection
             if !self.inited {
                 self.inited = true;
-                return Poll::Ready(Event::PowerDetected);
+                // Check current VBUS state via OTGSC.ASV (A Session Valid)
+                if r.otgsc().read().asv() {
+                    return Poll::Ready(Event::PowerDetected);
+                } else {
+                    return Poll::Ready(Event::PowerRemoved);
+                }
+            }
+
+            // VBUS change event
+            if IRQ_VBUS_CHANGE.load(Ordering::Acquire) {
+                IRQ_VBUS_CHANGE.store(false, Ordering::Relaxed);
+                // Check current VBUS state
+                if r.otgsc().read().asv() {
+                    return Poll::Ready(Event::PowerDetected);
+                } else {
+                    return Poll::Ready(Event::PowerRemoved);
+                }
             }
 
             // RESET event
