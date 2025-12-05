@@ -3,11 +3,12 @@
 #![feature(type_alias_impl_trait)]
 #![feature(impl_trait_in_assoc_type)]
 
+use defmt::info;
 use embassy_executor::Spawner;
 use embassy_time::Timer;
 use hal::Peri;
-use hpm_hal as hal;
-use hpm_hal::gpio::{AnyPin, Level, Output};
+use hal::gpio::{AnyPin, Level, Output};
+use {defmt_rtt as _, hpm_hal as hal};
 
 #[embassy_executor::task(pool_size = 3)]
 async fn blink(pin: Peri<'static, AnyPin>, interval_ms: u64) {
@@ -31,6 +32,8 @@ async fn main(spawner: Spawner) -> ! {
 
     loop {
         Timer::after_millis(1000).await;
+
+        info!("Main loop tick");
     }
 }
 

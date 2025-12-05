@@ -1,12 +1,11 @@
 [package]
 name = "hpm6750evkmini"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
-# defmt is not available on hpm67 dual-core chips
-# defmt = "0.3.8"
-# defmt-rtt = "0.4.1"
+defmt = "1.0.1"
+defmt-rtt = "1.1.0"
 hpm-hal = { path = "../..", features = [
     "rt",
     "embassy",
@@ -19,7 +18,7 @@ embedded-hal = "1.0.0"
 
 panic-halt = "1.0.0"
 riscv = { version = "0.15.0", features = ["critical-section-single-hart"] }
-riscv-semihosting = "0.1.0"
+riscv-semihosting = "0.2.1"
 andes-riscv = "0.1.1"
 
 embassy-time = { version = "0.5.0", features = ["tick-hz-1_000_000"] }
@@ -36,9 +35,9 @@ embassy-usb = { version = "0.5.1", features = [
 heapless = "0.9.2"
 embedded-io = "0.7.1"
 futures-util = { version = "0.3.31", default-features = false }
-assign-resources = "0.4.1"
+assign-resources = "0.5.0"
 embedded-graphics = "0.8.1"
-embedded-hal-bus = { version = "0.2.0", features = ["async"] }
+embedded-hal-bus = { version = "0.3.0", features = ["async"] }
 usbd-hid = "0.9.0"
 static_cell = "2"
 
