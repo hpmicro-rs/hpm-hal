@@ -164,6 +164,11 @@ fn main() {
         }
     }
 
+    // Generate resource cfg flags (e.g., resource_mot0, resource_mot1)
+    for r in METADATA.resources {
+        cfgs.enable(format!("resource_{}", r.name.to_ascii_lowercase()));
+    }
+
     // ========
     // Generate singletons
 

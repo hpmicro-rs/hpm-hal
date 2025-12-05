@@ -84,7 +84,7 @@ pub mod rng;
 pub mod trgm;
 
 // EWDG (Enhanced Watchdog) - v53/v68 only, v67 uses simple WDG
-#[cfg(any(wdg_v53, wdg_v68))]
+#[cfg(ewdg)]
 pub mod ewdg;
 
 #[cfg(feature = "rt")]
