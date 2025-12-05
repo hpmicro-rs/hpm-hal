@@ -12,6 +12,7 @@ hpm-hal = { path = "../..", features = [
     "hpm6750",
     "chrono",
     "time",
+    "defmt",
 ], default-features = false }
 
 embedded-hal = "1.0.0"

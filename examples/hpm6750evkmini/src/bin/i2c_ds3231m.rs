@@ -3,47 +3,15 @@
 #![feature(type_alias_impl_trait)]
 #![feature(impl_trait_in_assoc_type)]
 
-use assign_resources::assign_resources;
+use defmt::info;
 use embassy_time::{Duration, Timer};
-use embedded_io::Write as _; // `writeln!` provider
 use hal::gpio::{Level, Output, Speed};
 use hal::i2c::I2c;
 use hal::mode::Blocking;
-use hal::peripherals;
 use hpm_hal as hal;
-use hpm_hal::gpio::Pin;
+use {defmt_rtt as _};
 
 const BOARD_NAME: &str = "HPM6750EVKMINI";
-const BANNER: &str = include_str!("../../../assets/BANNER");
-
-assign_resources! {
-    leds: Leds {
-        red: PB19,
-    }
-    // FT2232 UART, default uart
-    uart: Uart0 {
-        tx: PY06,
-        rx: PY07,
-        uart0: UART0,
-    }
-    i2c: I2cRes {
-        sda: PB13,
-        scl: PB14,
-        i2c3: I2C3,
-    }
-}
-
-static mut UART: Option<hal::uart::Uart<'static, Blocking>> = None;
-
-macro_rules! println {
-    ($($arg:tt)*) => {
-        {
-            if let Some(uart) = unsafe { UART.as_mut() } {
-                writeln!(uart, $($arg)*).unwrap();
-            }
-        }
-    }
-}
 
 // - MARK: DS3231M Driver
 pub const ADDRESS: u8 = 0x68;
@@ -74,7 +42,7 @@ pub mod regs {
 }
 
 /// Structure containing date and time information
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, defmt::Format)]
 pub struct DateTime {
     /// 0..4095
     pub year: u16,
@@ -94,7 +62,7 @@ pub struct DateTime {
 
 /// A day of the week
 #[repr(u8)]
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Ord, PartialOrd, Hash)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Ord, PartialOrd, Hash, defmt::Format)]
 #[allow(missing_docs)]
 pub enum DayOfWeek {
     Sunday = 7,
@@ -134,8 +102,6 @@ impl<'d> DS3231M<'d> {
     pub fn now(&mut self) -> Option<DateTime> {
         let mut buf = [0u8; 7];
         self.i2c.blocking_write_read(ADDRESS, &[regs::SECONDS], &mut buf).ok()?;
-        //self.i2c.blocking_write(ADDRESS, &[regs::SECONDS]).ok()?;
-        //self.i2c.blocking_read(ADDRESS, &mut buf).ok()?;
 
         let seconds = bcd2bin(buf[0]);
         let minutes = bcd2bin(buf[1]);
@@ -186,20 +152,9 @@ async fn main(_spawner: embassy_executor::Spawner) -> ! {
     let config = hal::Config::default();
     let p = hal::init(config);
 
-    let r = split_resources!(p);
+    let mut led = Output::new(p.PB19, Level::Low, Speed::default());
 
-    let mut led = Output::new(r.leds.red, Level::Low, Speed::default());
-
-    // use IOC for power domain PY pins
-    r.uart.tx.set_as_ioc_gpio();
-    r.uart.rx.set_as_ioc_gpio();
-
-    let uart = hal::uart::Uart::new_blocking(r.uart.uart0, r.uart.rx, r.uart.tx, Default::default()).unwrap();
-    unsafe { UART = Some(uart) };
-
-    println!("{}", BANNER);
-    println!("Board: {}", BOARD_NAME);
-    println!("Board init!");
+    info!("Board: {}", BOARD_NAME);
 
     let mut i2c_config = hal::i2c::Config::default();
     {
@@ -207,26 +162,14 @@ async fn main(_spawner: embassy_executor::Spawner) -> ! {
         i2c_config.mode = I2cMode::Fast;
         i2c_config.timeout = Duration::from_secs(1);
     }
-    let i2c = I2c::new_blocking(r.i2c.i2c3, r.i2c.scl, r.i2c.sda, i2c_config);
+    let i2c = I2c::new_blocking(p.I2C3, p.PB14, p.PB13, i2c_config);
 
     let mut ds3231m = DS3231M::new(i2c);
 
-    /*
-    ds3231m.set_datetime(&DateTime {
-        year: 2024,
-        month: 7,
-        day: 14,
-        day_of_week: DayOfWeek::Saturday,
-        hour: 13,
-        minute: 24,
-        second: 0,
-    });
-    */
-
-    println!("DS3231M: {:?}", ds3231m.now().unwrap());
+    info!("DS3231M: {:?}", ds3231m.now().unwrap());
 
     loop {
-        println!("DS3231M: {:?}", ds3231m.now().unwrap());
+        info!("DS3231M: {:?}", ds3231m.now().unwrap());
 
         led.toggle();
 
@@ -235,8 +178,7 @@ async fn main(_spawner: embassy_executor::Spawner) -> ! {
 }
 
 #[panic_handler]
-unsafe fn panic(info: &core::panic::PanicInfo) -> ! {
-    println!("panic!\n {}", info);
-
+fn panic(info: &core::panic::PanicInfo) -> ! {
+    defmt::error!("panic: {}", defmt::Display2Format(info));
     loop {}
 }

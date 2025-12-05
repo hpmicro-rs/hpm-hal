@@ -4,63 +4,36 @@
 #![feature(abi_riscv_interrupt)]
 #![feature(impl_trait_in_assoc_type)]
 
-use assign_resources::assign_resources;
+use defmt::info;
 use embassy_executor::Spawner;
 use embassy_usb::class::cdc_acm::{CdcAcmClass, Receiver, Sender, State};
 use embassy_usb::driver::EndpointError;
 use embassy_usb::Builder;
-use embedded_io::Write as _;
 use futures_util::future::join;
 use hal::usb::{EndpointState, Instance, UsbDriver};
-use hpm_hal as hal;
-use hpm_hal::gpio::Pin;
-use hpm_hal::mode::Blocking;
-use hpm_hal::{bind_interrupts, peripherals};
+use hpm_hal::peripherals;
 use static_cell::StaticCell;
+use {defmt_rtt as _, hpm_hal as hal};
 
-bind_interrupts!(struct Irqs {
+hal::bind_interrupts!(struct Irqs {
     USB0 => hal::usb::InterruptHandler<peripherals::USB0>;
 });
 
 /// USB endpoint state - must be in non-cacheable memory for DMA access
-#[link_section = ".noncacheable"]
+#[unsafe(link_section = ".noncacheable")]
 static EP_STATE: EndpointState = EndpointState::new();
-
-assign_resources! {
-    // FT2232 UART
-    uart: Uart0Resources {
-        tx: PY06,
-        rx: PY07,
-        uart: UART0,
-    }
-}
-
-static mut UART: Option<hal::uart::Uart<'static, Blocking>> = None;
-
-macro_rules! println {
-    ($($arg:tt)*) => {
-        {
-            if let Some(uart) = unsafe { UART.as_mut() } {
-                writeln!(uart, $($arg)*).unwrap();
-            }
-        }
-    }
-}
 
 #[embassy_executor::main(entry = "hpm_hal::entry")]
 async fn main(_spawner: Spawner) -> ! {
     let p = hal::init(Default::default());
 
-    let r = split_resources!(p);
+    info!("Board: HPM6750EVKMINI");
+    info!("USB CDC-ACM example");
+    info!("CPU0 clock: {}Hz", hal::sysctl::clocks().cpu0.0);
 
-    // use IOC for power domain PY pins
-    r.uart.tx.set_as_ioc_gpio();
-    r.uart.rx.set_as_ioc_gpio();
-
-    let uart = hal::uart::Uart::new_blocking(r.uart.uart, r.uart.rx, r.uart.tx, Default::default()).unwrap();
-    unsafe { UART = Some(uart) };
-
+    info!("Initializing USB driver...");
     let usb_driver = hal::usb::UsbDriver::new(p.USB0, Irqs, Default::default(), &EP_STATE);
+    info!("USB driver initialized");
 
     // Create embassy-usb Config
     let mut config = embassy_usb::Config::new(0xc0de, 0xcafe);
@@ -97,19 +70,19 @@ async fn main(_spawner: Spawner) -> ! {
 
     // Build the builder.
     let mut usb = builder.build();
+    info!("USB device built, waiting for connection...");
 
     // Run the USB device.
     let usb_fut = usb.run();
 
     // Do stuff with the class!
     let echo_fut = async {
-        // class.wait_connection().await;
         let (mut sender, mut reader) = class.split();
         sender.wait_connection().await;
         reader.wait_connection().await;
-        // println!("Connected");
+        info!("Connected");
         let _ = echo(&mut reader, &mut sender).await;
-        // println!("Disconnected");
+        info!("Disconnected");
     };
 
     // Run everything concurrently.
@@ -139,7 +112,7 @@ async fn echo<'d, T: Instance + 'd>(
     loop {
         let n = reader.read_packet(&mut buf).await?;
         let data = &buf[..n];
-        // println!("echo data: {:x?}, len: {}", data, n);
+        info!("echo data: {:x}, len: {}", data, n);
         sender.write_packet(data).await?;
         // Clear bufffer
         buf = [0; 64];
@@ -148,6 +121,6 @@ async fn echo<'d, T: Instance + 'd>(
 
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-    println!("panic: {:?}", info);
+    defmt::error!("panic: {}", defmt::Display2Format(info));
     loop {}
 }

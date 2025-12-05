@@ -4,22 +4,19 @@
 #![feature(impl_trait_in_assoc_type)]
 #![feature(abi_riscv_interrupt)]
 
-use assign_resources::assign_resources;
+use defmt::info;
 use embassy_executor::Spawner;
 use embassy_time::Timer;
-use embedded_io::Write as _;
-use hal::gpio::{AnyPin, Flex, Pin};
-use hal::{pac, peripherals};
+use hal::gpio::{AnyPin, Flex};
+use hal::{pac, peripherals, Peri};
 use hpm_hal as hal;
 use hpm_hal::interrupt::InterruptExt;
-use hpm_hal::mode::Blocking;
+use {defmt_rtt as _};
 
 const BOARD_NAME: &str = "HPM6750EVKMINI";
 
-const BANNER: &str = include_str!("../../../assets/BANNER");
-
 #[embassy_executor::task(pool_size = 3)]
-async fn blink(pin: AnyPin, interval_ms: u64) {
+async fn blink(pin: Peri<'static, AnyPin>, interval_ms: u64) {
     let mut led = Flex::new(pin);
     led.set_as_output(Default::default());
     led.set_high();
@@ -31,38 +28,8 @@ async fn blink(pin: AnyPin, interval_ms: u64) {
     }
 }
 
-assign_resources! {
-    leds: Leds {
-        // PWM1_P0
-        r: PB19,
-        // PWM1_P1
-        g: PB18,
-        // PWM0_P7
-        b: PB20,
-    }
-    // FT2232 UART, default uart
-    uart: Uart0 {
-        tx: PY06,
-        rx: PY07,
-        uart0: UART0,
-    }
-}
-
-static mut UART: Option<hal::uart::Uart<'static, Blocking>> = None;
-
-macro_rules! println {
-    ($($arg:tt)*) => {
-        {
-            if let Some(uart) = unsafe { UART.as_mut() } {
-                writeln!(uart, $($arg)*).unwrap();
-            }
-        }
-    }
-}
-
 #[embassy_executor::main(entry = "hpm_hal::entry")]
 async fn main(spawner: Spawner) -> ! {
-    // let p = hal::init(Default::default());
     let mut config = hal::Config::default();
     {
         use hal::sysctl::*;
@@ -72,60 +39,45 @@ async fn main(spawner: Spawner) -> ! {
     }
     let p = hal::init(config);
 
-    let r = split_resources!(p);
+    info!("Board: {}", BOARD_NAME);
 
-    // use IOC for power domain PY pins
-    r.uart.tx.set_as_ioc_gpio();
-    r.uart.rx.set_as_ioc_gpio();
-
-    let uart = hal::uart::Uart::new_blocking(r.uart.uart0, r.uart.rx, r.uart.tx, Default::default()).unwrap();
-    unsafe { UART = Some(uart) };
-
-    println!("{}", BANNER);
-    println!("Board: {}", BOARD_NAME);
-
-    println!("Clock summary:");
-    println!("  CPU0:\t{}Hz", hal::sysctl::clocks().cpu0.0);
-    println!("  CPU1:\t{}Hz", hal::sysctl::clocks().cpu1.0);
-    println!("  AHB:\t{}Hz", hal::sysctl::clocks().ahb.0);
-    println!(
+    info!("Clock summary:");
+    info!("  CPU0:\t{}Hz", hal::sysctl::clocks().cpu0.0);
+    info!("  CPU1:\t{}Hz", hal::sysctl::clocks().cpu1.0);
+    info!("  AHB:\t{}Hz", hal::sysctl::clocks().ahb.0);
+    info!(
         "  AXI0:\t{}Hz",
         hal::sysctl::clocks().get_clock_freq(pac::clocks::AXI).0
     );
-    // not the same as hpm_sdk, which calls it axi1, axi2
-    println!(
+    info!(
         "  CONN:\t{}Hz",
         hal::sysctl::clocks().get_clock_freq(pac::clocks::CONN).0
     );
-    println!("  VIS:\t{}Hz", hal::sysctl::clocks().get_clock_freq(pac::clocks::VIS).0);
-    println!(
+    info!("  VIS:\t{}Hz", hal::sysctl::clocks().get_clock_freq(pac::clocks::VIS).0);
+    info!(
         "  XPI0:\t{}Hz",
         hal::sysctl::clocks().get_clock_freq(pac::clocks::XPI0).0
     );
-    println!(
+    info!(
         "  FEMC:\t{}Hz",
         hal::sysctl::clocks().get_clock_freq(pac::clocks::FEMC).0
     );
-    // DISP subsystem
-    println!(
+    info!(
         "  LCDC:\t{}Hz",
         hal::sysctl::clocks().get_clock_freq(pac::clocks::LCDC).0
     );
-    println!(
+    info!(
         "  MTMR:\t{}Hz",
         hal::sysctl::clocks().get_clock_freq(pac::clocks::MCHTMR0).0
     );
 
-    spawner.spawn(blink(r.leds.r.degrade(), 500)).unwrap();
-    spawner.spawn(blink(r.leds.g.degrade(), 200)).unwrap();
-    spawner.spawn(blink(r.leds.b.degrade(), 300)).unwrap();
+    spawner.spawn(blink(p.PB19.into(), 500)).unwrap();
+    spawner.spawn(blink(p.PB18.into(), 200)).unwrap();
+    spawner.spawn(blink(p.PB20.into(), 300)).unwrap();
 
     let mut rtc = hal::rtc::Rtc::new(p.RTC);
 
-    // set timestamp
-    // rtc.restore(1720896440, 0);
-
-    println!("read RTC seconds: {}", rtc.seconds());
+    info!("read RTC seconds: {}", rtc.seconds());
 
     // alarm after 5s, every 10s
     let val = rtc.seconds() + 5;
@@ -135,15 +87,15 @@ async fn main(spawner: Spawner) -> ! {
     }
 
     loop {
-        println!("RTC {:?}", rtc.now());
+        info!("RTC {:?}", defmt::Debug2Format(&rtc.now()));
         Timer::after_millis(1000).await;
     }
 }
 
 #[allow(non_snake_case)]
-#[no_mangle]
+#[unsafe(no_mangle)]
 unsafe extern "riscv-interrupt-m" fn RTC() {
-    println!("Alarmed!");
+    info!("Alarmed!");
 
     hal::rtc::Rtc::<peripherals::RTC>::clear_interrupt(hpm_hal::rtc::Alarms::Alarm0);
 
@@ -151,8 +103,7 @@ unsafe extern "riscv-interrupt-m" fn RTC() {
 }
 
 #[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
-    //let _ = println!("\n\n\n{}", info);
-
+fn panic(info: &core::panic::PanicInfo) -> ! {
+    defmt::error!("panic: {}", defmt::Display2Format(info));
     loop {}
 }

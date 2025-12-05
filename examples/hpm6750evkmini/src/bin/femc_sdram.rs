@@ -1,43 +1,13 @@
 #![no_main]
 #![no_std]
-#![feature(type_alias_impl_trait)]
-#![feature(impl_trait_in_assoc_type)]
 
-use assign_resources::assign_resources;
+use defmt::info;
 use embassy_time::Delay;
 use embedded_hal::delay::DelayNs;
-use embedded_io::Write as _;
-use hal::gpio::Pin;
-use hal::{pac, peripherals};
+use hal::pac;
 use hpm_hal as hal;
 use hpm_hal::gpio::{Level, Output};
-use hpm_hal::mode::Blocking;
-
-assign_resources! {
-    leds: Led {
-        r: PB19,
-        g: PB18,
-        b: PB20,
-    }
-    // FT2232 UART, default uart
-    uart: Uart0 {
-        tx: PY06,
-        rx: PY07,
-        uart0: UART0,
-    }
-}
-
-static mut UART: Option<hal::uart::Uart<'static, Blocking>> = None;
-
-macro_rules! println {
-    ($($arg:tt)*) => {
-        {
-            if let Some(uart) = unsafe { UART.as_mut() } {
-                writeln!(uart, $($arg)*).unwrap();
-            }
-        }
-    }
-}
+use {defmt_rtt as _};
 
 fn init_femc_pins() {
     use pac::iomux::*;
@@ -208,10 +178,9 @@ fn init_ext_ram() {
     sdram_config.delay_cell_disable = true;
     sdram_config.delay_cell_value = 0;
 
-    println!("Configuring SDRAM...");
+    info!("Configuring SDRAM...");
 
     let _ = femc.configure_sdram(clk_in.0, sdram_config).unwrap();
-    // pac::FEMC.sdrctrl0().modify(|w| w.set_highband(true));
 }
 
 const SDRAM: *mut u32 = 0x4000_0000 as *mut u32;
@@ -220,33 +189,26 @@ const SDRAM: *mut u32 = 0x4000_0000 as *mut u32;
 fn main() -> ! {
     let p = hal::init(Default::default());
 
-    let r = split_resources!(p);
+    info!("Board: HPM6750EVKMINI");
 
-    // use IOC for power domain PY pins
-    r.uart.tx.set_as_ioc_gpio();
-    r.uart.rx.set_as_ioc_gpio();
-
-    let uart = hal::uart::Uart::new_blocking(r.uart.uart0, r.uart.rx, r.uart.tx, Default::default()).unwrap();
-    unsafe { UART = Some(uart) };
-
-    println!("UART init");
-
-    let mut red_led = Output::new(r.leds.r, Level::Low, Default::default());
+    let mut red_led = Output::new(p.PB19, Level::Low, Default::default());
 
     init_ext_ram();
 
-    println!("SDRAM init");
+    info!("SDRAM init done");
 
     for i in (0..(1024 * 1024 * 4)).step_by(4) {
         let ptr = unsafe { SDRAM.add(i) }; // add word address
         unsafe { core::ptr::write_volatile(ptr, 0xCAFEBABE) };
 
         if i % 102400 == 0 {
-            println!("sdram: {:p} = {:#010x}", ptr, unsafe { core::ptr::read_volatile(ptr) });
+            info!("sdram: {:x} = {:08x}", ptr as u32, unsafe {
+                core::ptr::read_volatile(ptr)
+            });
         }
     }
 
-    println!("SDRAM write done");
+    info!("SDRAM write done");
 
     let mut errors = 0;
     // read out
@@ -255,17 +217,17 @@ fn main() -> ! {
         let val = unsafe { core::ptr::read_volatile(ptr) };
 
         if val != 0xCAFEBABE {
-            println!("ERROR: sdram: {:p} = {:#010x}", ptr, val);
+            info!("ERROR: sdram: {:x} = {:08x}", ptr as u32, val);
             errors += 1;
         }
     }
 
-    println!("SDRAM read done, error = {}", errors);
+    info!("SDRAM read done, errors = {}", errors);
 
     loop {
         Delay.delay_ms(1000);
 
-        println!("tick");
+        info!("tick");
 
         red_led.toggle();
     }
@@ -273,6 +235,6 @@ fn main() -> ! {
 
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-    println!("panic!\n {}", info);
+    defmt::error!("panic: {}", defmt::Display2Format(info));
     loop {}
 }
