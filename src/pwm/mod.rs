@@ -692,12 +692,22 @@ pub(crate) trait SealedInstance {
 #[allow(private_bounds)]
 pub trait Instance: SealedInstance + crate::PeripheralType + 'static {}
 
-// PWM0 -> MOT0, PWM1 -> MOT1, PWM2 -> MOT2, PWM3 -> MOT3
+// PWM resource mapping varies by chip family:
+// - HPM5300: MOT0 for all PWM (only has MOT0)
+// - HPM6300: MOT0/MOT1 for PWM0/PWM1
+// - HPM6200/HPM6700: MOT0-3 for PWM0-3
+// - HPM6E00: PWM0-3 resources directly (PWMV2, no MOT)
+//
+// We use resource_motX cfg flags generated from METADATA.resources
+
 #[cfg(peri_pwm0)]
 impl SealedInstance for crate::peripherals::PWM0 {
     fn regs() -> pac::pwm::Pwm {
         pac::PWM0
     }
+    #[cfg(resource_pwm0)]
+    const MOT_RESOURCE: usize = pac::resources::PWM0;
+    #[cfg(not(resource_pwm0))]
     const MOT_RESOURCE: usize = pac::resources::MOT0;
 }
 #[cfg(peri_pwm0)]
@@ -708,7 +718,12 @@ impl SealedInstance for crate::peripherals::PWM1 {
     fn regs() -> pac::pwm::Pwm {
         pac::PWM1
     }
+    #[cfg(resource_pwm1)]
+    const MOT_RESOURCE: usize = pac::resources::PWM1;
+    #[cfg(all(not(resource_pwm1), resource_mot1))]
     const MOT_RESOURCE: usize = pac::resources::MOT1;
+    #[cfg(all(not(resource_pwm1), not(resource_mot1)))]
+    const MOT_RESOURCE: usize = pac::resources::MOT0;
 }
 #[cfg(peri_pwm1)]
 impl Instance for crate::peripherals::PWM1 {}
@@ -718,6 +733,9 @@ impl SealedInstance for crate::peripherals::PWM2 {
     fn regs() -> pac::pwm::Pwm {
         pac::PWM2
     }
+    #[cfg(resource_pwm2)]
+    const MOT_RESOURCE: usize = pac::resources::PWM2;
+    #[cfg(not(resource_pwm2))]
     const MOT_RESOURCE: usize = pac::resources::MOT2;
 }
 #[cfg(peri_pwm2)]
@@ -728,6 +746,9 @@ impl SealedInstance for crate::peripherals::PWM3 {
     fn regs() -> pac::pwm::Pwm {
         pac::PWM3
     }
+    #[cfg(resource_pwm3)]
+    const MOT_RESOURCE: usize = pac::resources::PWM3;
+    #[cfg(not(resource_pwm3))]
     const MOT_RESOURCE: usize = pac::resources::MOT3;
 }
 #[cfg(peri_pwm3)]

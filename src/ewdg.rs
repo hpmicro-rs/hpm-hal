@@ -16,6 +16,7 @@
 //! use hpm_hal::ewdg::{Watchdog, Config};
 //! use embassy_time::Duration;
 //!
+//! // HPM5300/HPM6800 series: EWDG0, EWDG1
 //! let mut wdg = Watchdog::new(p.EWDG0, Config::default());
 //! wdg.start(Duration::from_secs(1));
 //!
@@ -112,8 +113,8 @@ pub struct Status {
     pub parity_error: bool,
 }
 
-impl From<pac::wdg::regs::WdtStatus> for Status {
-    fn from(reg: pac::wdg::regs::WdtStatus) -> Self {
+impl From<pac::ewdg::regs::WdtStatus> for Status {
+    fn from(reg: pac::ewdg::regs::WdtStatus) -> Self {
         Self {
             refresh_violation: reg.ref_vio(),
             refresh_unlock_fail: reg.ref_unl_fail(),
@@ -156,13 +157,13 @@ impl<'d, T: Instance> Watchdog<'d, T> {
         };
 
         // Configure CTRL0
-        let mut ctrl0 = pac::wdg::regs::Ctrl0(0);
+        let mut ctrl0 = pac::ewdg::regs::Ctrl0(0);
         ctrl0.set_clk_sel(config.clock_source == ClockSource::Osc32k);
         ctrl0.set_en_dbg(config.run_in_debug);
         ctrl0.set_en_lp(config.low_power_mode.to_bits());
 
         // Write with parity
-        r.ctrl0().write_value(pac::wdg::regs::Ctrl0(calc_parity(ctrl0.0)));
+        r.ctrl0().write_value(pac::ewdg::regs::Ctrl0(calc_parity(ctrl0.0)));
 
         Self { _peri: peri, clock_freq }
     }
@@ -187,17 +188,17 @@ impl<'d, T: Instance> Watchdog<'d, T> {
 
         // Update divider in CTRL0
         let ctrl0 = r.ctrl0().read();
-        let mut new_ctrl0 = pac::wdg::regs::Ctrl0(ctrl0.0 & !((0x07 << 25) | PARITY_BIT));
+        let mut new_ctrl0 = pac::ewdg::regs::Ctrl0(ctrl0.0 & !((0x07 << 25) | PARITY_BIT));
         new_ctrl0.set_div_value(div_value);
-        r.ctrl0().write_value(pac::wdg::regs::Ctrl0(calc_parity(new_ctrl0.0)));
+        r.ctrl0().write_value(pac::ewdg::regs::Ctrl0(calc_parity(new_ctrl0.0)));
 
         // Set timeout value
         r.ot_rst_val().write(|w| w.set_ot_rst_val(ticks));
 
         // Enable timeout reset in CTRL1
-        let mut ctrl1 = pac::wdg::regs::Ctrl1(0);
+        let mut ctrl1 = pac::ewdg::regs::Ctrl1(0);
         ctrl1.set_ot_rst_en(true);
-        r.ctrl1().write_value(pac::wdg::regs::Ctrl1(calc_parity(ctrl1.0)));
+        r.ctrl1().write_value(pac::ewdg::regs::Ctrl1(calc_parity(ctrl1.0)));
 
         // Enable watchdog
         r.wdt_en().write(|w| w.set_wdog_en(true));
@@ -206,7 +207,7 @@ impl<'d, T: Instance> Watchdog<'d, T> {
     /// Feed (refresh) the watchdog to prevent reset
     #[inline]
     pub fn feed(&mut self) {
-        T::regs().wdt_refresh_reg().write_value(pac::wdg::regs::WdtRefreshReg(REFRESH_KEY));
+        T::regs().wdt_refresh_reg().write_value(pac::ewdg::regs::WdtRefreshReg(REFRESH_KEY));
     }
 
     /// Stop the watchdog
@@ -229,7 +230,7 @@ impl<'d, T: Instance> Watchdog<'d, T> {
 
     /// Clear status flags (write 1 to clear)
     pub fn clear_status(&mut self, status: Status) {
-        let mut val = pac::wdg::regs::WdtStatus(0);
+        let mut val = pac::ewdg::regs::WdtStatus(0);
         val.set_ref_vio(status.refresh_violation);
         val.set_ref_unl_fail(status.refresh_unlock_fail);
         val.set_ctl_vio(status.ctrl_violation);
@@ -251,9 +252,9 @@ impl<'d, T: Instance> Watchdog<'d, T> {
         r.ot_rst_val().write(|w| w.set_ot_rst_val(1));
 
         // Enable timeout reset
-        let mut ctrl1 = pac::wdg::regs::Ctrl1(0);
+        let mut ctrl1 = pac::ewdg::regs::Ctrl1(0);
         ctrl1.set_ot_rst_en(true);
-        r.ctrl1().write_value(pac::wdg::regs::Ctrl1(calc_parity(ctrl1.0)));
+        r.ctrl1().write_value(pac::ewdg::regs::Ctrl1(calc_parity(ctrl1.0)));
 
         // Enable watchdog
         r.wdt_en().write(|w| w.set_wdog_en(true));
@@ -266,7 +267,7 @@ impl<'d, T: Instance> Watchdog<'d, T> {
 
 // Instance trait
 pub(crate) trait SealedInstance {
-    fn regs() -> pac::wdg::Wdg;
+    fn regs() -> pac::ewdg::Ewdg;
     fn add_resource_group(group: usize);
 }
 
@@ -274,33 +275,33 @@ pub(crate) trait SealedInstance {
 #[allow(private_bounds)]
 pub trait Instance: SealedInstance + crate::PeripheralType + 'static {}
 
-#[cfg(peri_wdg0)]
-impl SealedInstance for crate::peripherals::WDG0 {
-    fn regs() -> pac::wdg::Wdg {
-        pac::WDG0
+#[cfg(peri_ewdg0)]
+impl SealedInstance for crate::peripherals::EWDG0 {
+    fn regs() -> pac::ewdg::Ewdg {
+        pac::EWDG0
     }
     fn add_resource_group(group: usize) {
         crate::sysctl::clock_add_to_group(pac::resources::WDG0, group);
     }
 }
-#[cfg(peri_wdg0)]
-impl Instance for crate::peripherals::WDG0 {}
+#[cfg(peri_ewdg0)]
+impl Instance for crate::peripherals::EWDG0 {}
 
-#[cfg(peri_wdg1)]
-impl SealedInstance for crate::peripherals::WDG1 {
-    fn regs() -> pac::wdg::Wdg {
-        pac::WDG1
+#[cfg(peri_ewdg1)]
+impl SealedInstance for crate::peripherals::EWDG1 {
+    fn regs() -> pac::ewdg::Ewdg {
+        pac::EWDG1
     }
     fn add_resource_group(group: usize) {
         crate::sysctl::clock_add_to_group(pac::resources::WDG1, group);
     }
 }
-#[cfg(peri_wdg1)]
-impl Instance for crate::peripherals::WDG1 {}
+#[cfg(peri_ewdg1)]
+impl Instance for crate::peripherals::EWDG1 {}
 
 #[cfg(peri_pwdg)]
 impl SealedInstance for crate::peripherals::PWDG {
-    fn regs() -> pac::wdg::Wdg {
+    fn regs() -> pac::ewdg::Ewdg {
         pac::PWDG
     }
     fn add_resource_group(_group: usize) {
