@@ -3,6 +3,8 @@
 #![feature(type_alias_impl_trait)]
 #![feature(impl_trait_in_assoc_type)]
 #![feature(abi_riscv_interrupt)]
+#![feature(format_args_nl)]
+#![allow(static_mut_refs)]
 use core::fmt::Write as _;
 
 use assign_resources::assign_resources;
@@ -17,8 +19,8 @@ use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::prelude::*;
 use embedded_graphics::text::Text;
 use embedded_hal::delay::DelayNs;
-use embedded_io::Write as _;
-use hal::gpio::{AnyPin, Level, Output, Pin as _};
+use hal::gpio::{AnyPin, Level, Output};
+use hal::Peri;
 use hal::mode::Blocking;
 use hal::{pac, peripherals};
 use hpm_hal::bind_interrupts;
@@ -119,7 +121,7 @@ assign_resources! {
 const BANNER: &str = include_str!("../../../assets/BANNER");
 
 #[embassy_executor::task(pool_size = 3)]
-async fn blink(pin: AnyPin, interval_ms: u32) {
+async fn blink(pin: Peri<'static, AnyPin>, interval_ms: u32) {
     // all leds are active low
     let mut led = Output::new(pin, Level::Low, Default::default());
     loop {
@@ -368,9 +370,9 @@ async fn main(spawner: Spawner) -> ! {
 
     defmt::info!("Board init!");
 
-    spawner.spawn(blink(r.leds.red.degrade(), 1000)).unwrap();
-    spawner.spawn(blink(r.leds.green.degrade(), 2000)).unwrap();
-    spawner.spawn(blink(r.leds.blue.degrade(), 3000)).unwrap();
+    spawner.spawn(blink(r.leds.red.into(), 1000)).unwrap();
+    spawner.spawn(blink(r.leds.green.into(), 2000)).unwrap();
+    spawner.spawn(blink(r.leds.blue.into(), 3000)).unwrap();
     defmt::info!("Tasks init!");
 
     println!("{}", BANNER);

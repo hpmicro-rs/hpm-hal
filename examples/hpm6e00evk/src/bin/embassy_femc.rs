@@ -2,6 +2,7 @@
 #![no_std]
 #![feature(type_alias_impl_trait)]
 #![feature(impl_trait_in_assoc_type)]
+#![allow(static_mut_refs)]
 
 use core::mem;
 
@@ -299,7 +300,7 @@ async fn blink(pin: hal::Peri<'static, AnyPin>, interval_ms: u32) {
 const MEM_START: usize = 0x40000000; // Start address for memory test
 const MEM_SIZE: usize = 0x2000000; // 32MB
 
-#[link_section = ".fast"]
+#[unsafe(link_section = ".fast")]
 fn memtest_operation(addr: *mut u32, data: u32, operation: u8) -> bool {
     unsafe {
         match operation {
@@ -325,7 +326,7 @@ fn memtest_operation(addr: *mut u32, data: u32, operation: u8) -> bool {
     }
 }
 
-#[link_section = ".fast"]
+#[unsafe(link_section = ".fast")]
 fn memtest() {
     let mem_start = MEM_START as *mut u32;
     let pattern = 0x12345678;

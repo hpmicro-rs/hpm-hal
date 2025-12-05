@@ -26,7 +26,7 @@ bind_interrupts!(struct Irqs {
 static STATE: StaticCell<State> = StaticCell::new();
 
 /// USB endpoint state - must be in non-cacheable memory for DMA access
-#[link_section = ".noncacheable"]
+#[unsafe(link_section = ".noncacheable")]
 static EP_STATE: EndpointState = EndpointState::new();
 
 #[embassy_executor::main(entry = "hpm_hal::entry")]
@@ -87,7 +87,7 @@ async fn main(_spawner: Spawner) -> ! {
     // Run the USB device.
     let usb_fut = usb.run();
 
-    let mut button = Input::new(p.PA03.into(), Pull::Down);
+    let mut button = Input::new(p.PB24, Pull::Down);
 
     let (reader, mut writer) = hid.split();
 
@@ -104,7 +104,18 @@ async fn main(_spawner: Spawner) -> ! {
                 reserved: 0,
             };
             // Send the report.
-            match writer.write_serialize(&report).await {
+            let report_bytes = [
+                report.modifier,
+                report.reserved,
+                report.keycodes[0],
+                report.keycodes[1],
+                report.keycodes[2],
+                report.keycodes[3],
+                report.keycodes[4],
+                report.keycodes[5],
+                report.leds,
+            ];
+            match writer.write(&report_bytes).await {
                 Ok(()) => {}
                 Err(e) => warn!("Failed to send report: {:?}", e),
             };
@@ -116,7 +127,18 @@ async fn main(_spawner: Spawner) -> ! {
                 modifier: 0,
                 reserved: 0,
             };
-            match writer.write_serialize(&report).await {
+            let report_bytes = [
+                report.modifier,
+                report.reserved,
+                report.keycodes[0],
+                report.keycodes[1],
+                report.keycodes[2],
+                report.keycodes[3],
+                report.keycodes[4],
+                report.keycodes[5],
+                report.leds,
+            ];
+            match writer.write(&report_bytes).await {
                 Ok(()) => {}
                 Err(e) => warn!("Failed to send report: {:?}", e),
             };
