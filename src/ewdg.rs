@@ -1,12 +1,16 @@
 //! Enhanced Watchdog (EWDG) driver.
 //!
-//! HPM EWDG provides advanced features:
+//! This module supports EWDG (wdg_v53/v68) found in HPM5300, HPM6200, HPM6800 series.
+//! HPM6700 series uses a different simple WDG peripheral (wdg_v67) which is not supported.
+//!
+//! ## Features
+//!
 //! - Configurable timeout (using 32K external or bus clock)
-//! - Window mode: feed only within valid time window
+//! - Window mode: feed only within valid time window (not yet implemented)
 //! - Can be disabled (unlike most MCUs)
 //! - Debug and low-power mode behavior
 //!
-//! # Example
+//! ## Example
 //!
 //! ```rust,ignore
 //! use hpm_hal::ewdg::{Watchdog, Config};
