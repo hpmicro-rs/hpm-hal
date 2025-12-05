@@ -9,16 +9,16 @@ This crate is a working-in-progress and not ready for production use.
 
 ### MCU Family Support
 
-| MCU Family | PAC | Demo | Embassy | SYSCTL | GPIO | UART | I2C | SPI | DMA | TMR | ADC | USB | CAN |
-|------------|-----|------|---------|--------|------|------|-----|-----|-----|-----|-----|-----|-----|
-| HPM6700    | ✓   | ✓    | ✓       | ✓      | ✓+   | ✓+   | ✓+  | ✓+  | ✓+  |     |     |     |     |
-| HPM6300    | ✓   | ✓    | ✓       | ✓      | ✓+   | ?    | ?   | ?   | ?   |     |     |     |     |
-| HPM6200    | ✓   | ✓    | ✓       | ✓      | ✓+   |      |     |     |     |     |     |     |     |
-| HPM5300    | ✓   | ✓    | ✓       | ✓      | ✓+   | ✓+   | ✓+  | ✓+  | ✓+  |     | ✓   | ✓   | ✓   |
-| HPM6800    | ✓   |      |         |        |      |      |     |     |     |     |     |     |     |
-| HPM6E00    | ✓   | ✓    | ✓       | ✓      | ✓+   | ✓+   | ✓+  | ✓+  | ✓+  |     |     | ✓   | ✓   |
+| MCU Family | PAC | Demo | Embassy | SYSCTL | GPIO | UART | I2C | SPI | DMA | TMR | PWM | ADC | WDG | USB | CAN |
+| ---------- | --- | ---- | ------- | ------ | ---- | ---- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| HPM6700    | Y   | Y    | Y       | Y      | Y+   | Y+   | Y+  | Y+  | Y+  | ?   | Y   |     |     |     |     |
+| HPM6300    | Y   | Y    | Y       | Y      | Y+   | ?    | ?   | ?   | ?   | ?   | ?   |     |     |     |     |
+| HPM6200    | Y   | Y    | Y       | Y      | Y+   |      |     |     |     | ?   | ?   |     |     |     |     |
+| HPM5300    | Y   | Y    | Y       | Y      | Y+   | Y+   | Y+  | Y+  | Y+  | Y   | ?   | Y   | Y   | Y   | Y   |
+| HPM6800    | Y   |      |         |        |      |      |     |     |     | ?   | ?   |     |     |     |     |
+| HPM6E00    | Y   | Y    | Y       | Y      | Y+   | Y+   | Y+  | Y+  | Y+  | ?   | !   |     | Y   | Y   | Y   |
 
-- ✓: Implemented
+- Y: Implemented
 - ?: Requires demo verification
 - !: Partially implemented
 - Blank: Not implemented
@@ -31,7 +31,9 @@ This crate is a working-in-progress and not ready for production use.
   - [x] L1C support
   - [ ] PMP for noncacheable memory
   - [ ] CPU1 support - how to?
-- [x] Embassy time driver using MCHTMR
+- [x] Embassy time driver
+  - [x] MCHTMR (64-bit, default)
+  - [x] GPTMR (32-bit + period, optional)
 - [x] SYSCTL init
   - [x] Resource group handling
 - [x] PLL setting
@@ -42,7 +44,7 @@ This crate is a working-in-progress and not ready for production use.
 - [x] UART
   - [x] Blocking driver
   - [x] Async driver
-  - [ ] Ring buffer based async
+  - [x] Ring buffer based async
 - [x] I2C
   - [x] Blocking driver
   - [x] Async driver
@@ -50,6 +52,12 @@ This crate is a working-in-progress and not ready for production use.
   - [x] QSPI driver
   - [x] Blocking
   - [x] Async using DMA
+- [x] PWM driver (v53/v62/v67)
+  - [x] SimplePwm with type-safe pin traits
+  - [x] Multi-channel support
+  - [ ] ComplementaryPwm with dead-time
+  - [ ] InputCapture
+  - [ ] PWMV2 (v6e, HPM6E00/5E00)
 - [x] ADC driver
   - [x] ADC16
     - blocking one-shot
