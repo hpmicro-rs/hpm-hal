@@ -268,8 +268,10 @@ fn main() {
         (("uart", "CTS"), quote!(crate::uart::CtsPin)),
         (("uart", "RTS"), quote!(crate::uart::RtsPin)),
         (("uart", "DE"), quote!(crate::uart::DePin)),
+        // I2C
         (("i2c", "SDA"), quote!(crate::i2c::SdaPin)),
         (("i2c", "SCL"), quote!(crate::i2c::SclPin)),
+        // SPI
         (("spi", "SCLK"), quote!(crate::spi::SclkPin)),
         (("spi", "CS0"), quote!(crate::spi::CsPin)),
         (("spi", "CS1"), quote!(crate::spi::CsPin)),
@@ -351,6 +353,17 @@ fn main() {
         (("femc", "DQ31"), quote!(crate::femc::DQ31Pin)),
         (("femc", "RAS"), quote!(crate::femc::RASPin)),
         (("femc", "WE"), quote!(crate::femc::WEPin)),
+        // PWM - 8 output channels + fault inputs
+        (("pwm", "P0"), quote!(crate::pwm::Ch0Pin)),
+        (("pwm", "P1"), quote!(crate::pwm::Ch1Pin)),
+        (("pwm", "P2"), quote!(crate::pwm::Ch2Pin)),
+        (("pwm", "P3"), quote!(crate::pwm::Ch3Pin)),
+        (("pwm", "P4"), quote!(crate::pwm::Ch4Pin)),
+        (("pwm", "P5"), quote!(crate::pwm::Ch5Pin)),
+        (("pwm", "P6"), quote!(crate::pwm::Ch6Pin)),
+        (("pwm", "P7"), quote!(crate::pwm::Ch7Pin)),
+        (("pwm", "FAULT0"), quote!(crate::pwm::Fault0Pin)),
+        (("pwm", "FAULT1"), quote!(crate::pwm::Fault1Pin)),
     ]
     .into();
 

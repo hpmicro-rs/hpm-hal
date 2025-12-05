@@ -13,6 +13,7 @@ pub use hpm_metapac as pac;
 
 pub use self::_generated::{Peripherals, peripherals};
 
+#[macro_use]
 mod macros;
 pub mod time;
 
