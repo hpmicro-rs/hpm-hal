@@ -4,12 +4,15 @@
 #![feature(impl_trait_in_assoc_type)]
 #![feature(abi_riscv_interrupt)]
 
+use core::fmt::Write as _;
+
 use embassy_executor::Spawner;
 use embassy_time::Timer;
-use embedded_io::Write as _;
 use hal::gpio::{AnyPin, Flex, Pin};
+use hal::Peri;
 use hpm_hal as hal;
 use hpm_hal::{bind_interrupts, peripherals};
+use {defmt_rtt as _};
 
 bind_interrupts!(struct Irqs {
     UART0 => hal::uart::InterruptHandler<peripherals::UART0>;
@@ -18,7 +21,7 @@ bind_interrupts!(struct Irqs {
 const BANNER: &str = include_str!("../../../assets/BANNER");
 
 #[embassy_executor::task(pool_size = 2)]
-async fn blink(pin: AnyPin) {
+async fn blink(pin: Peri<'static, AnyPin>) {
     let mut led = Flex::new(pin);
     led.set_as_output(Default::default());
     led.set_high();
@@ -35,7 +38,7 @@ async fn main(spawner: Spawner) -> ! {
     let config = hal::Config::default();
     let p = hal::init(config);
 
-    spawner.spawn(blink(p.PB19.degrade())).unwrap();
+    spawner.spawn(blink(p.PB19.into())).unwrap();
 
     p.PY07.set_as_ioc_gpio();
     p.PY06.set_as_ioc_gpio();
@@ -78,17 +81,6 @@ async fn main(spawner: Spawner) -> ! {
 
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-    use embedded_io::Write;
-    let mut uart = unsafe {
-        hal::uart::UartTx::new_blocking(
-            peripherals::UART0::steal(),
-            peripherals::PY06::steal(),
-            Default::default(),
-        )
-        .unwrap()
-    };
-
-    writeln!(uart, "\r\n\r\nPANIC: {}", info).unwrap();
-
+    defmt::error!("panic: {}", defmt::Display2Format(info));
     loop {}
 }

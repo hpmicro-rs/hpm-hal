@@ -3,20 +3,22 @@
 #![feature(type_alias_impl_trait)]
 #![feature(impl_trait_in_assoc_type)]
 
+use core::fmt::Write as _;
+
 use assign_resources::assign_resources;
 use embassy_executor::Spawner;
 use embassy_time::{Instant, Timer};
-use embedded_io::Write as _;
 use hal::gpio::{AnyPin, Flex, Pin};
-use hal::peripherals;
+use hal::{Peri, peripherals};
 use hpm_hal as hal;
+use {defmt_rtt as _};
 
 const BOARD_NAME: &str = "HPM6750EVKMINI";
 
 const BANNER: &str = include_str!("../../../assets/BANNER");
 
 #[embassy_executor::task(pool_size = 3)]
-async fn blink(pin: AnyPin, interval_ms: u64) {
+async fn blink(pin: Peri<'static, AnyPin>, interval_ms: u64) {
     let mut led = Flex::new(pin);
     led.set_as_output(Default::default());
     led.set_high();
@@ -56,9 +58,9 @@ async fn main(spawner: Spawner) -> ! {
     writeln!(uart, "{}", BANNER).unwrap();
     writeln!(uart, "Board: {}", BOARD_NAME).unwrap();
 
-    spawner.spawn(blink(r.leds.r.degrade(), 500)).unwrap();
-    spawner.spawn(blink(r.leds.g.degrade(), 200)).unwrap();
-    spawner.spawn(blink(r.leds.b.degrade(), 300)).unwrap();
+    spawner.spawn(blink(r.leds.r.into(), 500)).unwrap();
+    spawner.spawn(blink(r.leds.g.into(), 200)).unwrap();
+    spawner.spawn(blink(r.leds.b.into(), 300)).unwrap();
 
     writeln!(uart, "Type something:").unwrap();
 
@@ -87,8 +89,7 @@ async fn main(spawner: Spawner) -> ! {
 }
 
 #[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
-    //let _ = println!("\n\n\n{}", info);
-
+fn panic(info: &core::panic::PanicInfo) -> ! {
+    defmt::error!("panic: {}", defmt::Display2Format(info));
     loop {}
 }
