@@ -2,21 +2,32 @@
 target = "riscv32imafc-unknown-none-elf"
 
 [target.riscv32imafc-unknown-none-elf]
-runner = 'riscv64-unknown-elf-gdb -x ./openocd-semihosting.gdb'
-# not available
-# runner = "probe-rs run --chip HPM6750 --protocol jtag --chip-description-path ../../HPMicro.yaml"
-
+# runner = 'riscv64-unknown-elf-gdb -x ./openocd-semihosting.gdb'
+runner = [
+    "probe-rs",
+    "run",
+    "--chip",
+    "HPM6750",
+    "--chip-description-path",
+    "./HPM6700_Series.yaml",
+    "--protocol",
+    "jtag",
+    "--log-format",
+    "{t} {L} {fff}:{l} {s}",
+]
 rustflags = [
     # +zba,+zbb,+zbc,+zbs are not available on hpm67
     "-C",
-    "target-feature=+d,+zfh",
+    "target-feature=+zfh",
     # Linker scripts:
     "-C",
-    "link-arg=-Tmemory-ram.x",
+    "link-arg=-Tmemory-xpi.x",
     "-C",
     "link-arg=-Tdevice.x",
     "-C",
     "link-arg=-Thpm-link.x",
+    "-C",
+    "link-arg=-Tdefmt.x",
     "-C",
     "link-arg=-nmagic",
 ]
@@ -24,3 +35,5 @@ rustflags = [
 [unstable]
 build-std = ["core"]
 
+[env]
+DEFMT_LOG = "trace"

@@ -14,11 +14,9 @@ license = "MIT/Apache-2.0"
 
 [dependencies]
 # local-development
-hpm-metapac = { path = "../hpm-data/build/hpm-metapac" }
+# hpm-metapac = { path = "../hpm-data/build/hpm-metapac" }
 # git snapshot
-# hpm-metapac = { version = "0.0.5", git = "https://github.com/hpmicro-rs/hpm-metapac.git", tag = "hpm-data-caa8fd80439f3ac44e0701c4e6cde71a87128ee6" }
-# crates.io
-# hpm-metapac = { version = "0.0.5" }
+hpm-metapac = { git = "https://github.com/hpmicro-rs/hpm-metapac.git", tag = "hpm-data-78eb3027e3271df3b9add4520cb143afc2e3be2d" }
 
 # hpm-riscv-rt = { path = "../hpm-riscv-rt", optional = true }
 hpm-riscv-rt = { version = "0.3.0", optional = true }
@@ -54,12 +52,8 @@ embedded-storage = "0.3.1"
 rand_core = "0.9.3"
 
 [build-dependencies]
-hpm-metapac = { path = "../hpm-data/build/hpm-metapac", default-features = false, features = [
-    "metadata",
-] }
-# hpm-metapac = { git = "https://github.com/hpmicro-rs/hpm-metapac.git", tag = "hpm-data-caa8fd80439f3ac44e0701c4e6cde71a87128ee6", default-features = false, features = [
-#     "metadata",
-# ] }
+# hpm-metapac = { path = "../hpm-data/build/hpm-metapac", default-features = false, features = ["metadata"] }
+hpm-metapac = { git = "https://github.com/hpmicro-rs/hpm-metapac.git", tag = "hpm-data-78eb3027e3271df3b9add4520cb143afc2e3be2d", default-features = false, features = ["metadata"] }
 
 proc-macro2 = "1.0.92"
 quote = "1.0.37"
