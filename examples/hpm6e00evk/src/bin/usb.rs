@@ -20,7 +20,7 @@ bind_interrupts!(struct Irqs {
 });
 
 /// USB endpoint state - must be in non-cacheable memory for DMA access
-#[link_section = ".noncacheable"]
+#[unsafe(link_section = ".noncacheable")]
 static EP_STATE: EndpointState = EndpointState::new();
 
 #[embassy_executor::main(entry = "hpm_hal::entry")]

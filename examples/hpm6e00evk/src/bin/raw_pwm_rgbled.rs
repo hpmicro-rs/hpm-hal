@@ -4,6 +4,7 @@
 #![no_std]
 #![feature(type_alias_impl_trait)]
 #![feature(impl_trait_in_assoc_type)]
+#![allow(static_mut_refs)]
 
 use embassy_executor::Spawner;
 use embassy_time::Timer;
@@ -11,7 +12,7 @@ use embedded_io::Write as _;
 use hal::gpio::{Level, Output};
 use hal::mode::Blocking;
 use hal::pac;
-use hpm_hal::pac::pwm::vals;
+use hpm_hal::pac::pwmv2::vals;
 use hpm_hal::pac::{iomux, pins};
 use {defmt_rtt as _, hpm_hal as hal};
 
