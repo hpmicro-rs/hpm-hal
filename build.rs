@@ -369,6 +369,10 @@ fn main() {
         (("pwm", "P7"), quote!(crate::pwm::Ch7Pin)),
         (("pwm", "FAULT0"), quote!(crate::pwm::Fault0Pin)),
         (("pwm", "FAULT1"), quote!(crate::pwm::Fault1Pin)),
+        // I2S
+        (("i2s", "MCLK"), quote!(crate::i2s::MclkPin)),
+        (("i2s", "BCLK"), quote!(crate::i2s::BclkPin)),
+        (("i2s", "FCLK"), quote!(crate::i2s::FclkPin)),
     ]
     .into();
 
@@ -427,6 +431,27 @@ fn main() {
                         g.extend(quote! {
                             impl_adc_pin!( #peri, #pin_name, #ch);
                         })
+                    }
+                }
+
+                // I2S TXD/RXD pins are special - they have line indices
+                // Note: pinmux.rs normalizes TXD[0] -> TXD0, RXD[0] -> RXD0
+                if regs.kind == "i2s" {
+                    let peri = format_ident!("{}", p.name);
+                    let pin_name = format_ident!("{}", pin.pin);
+                    let alt = pin.alt.unwrap_or(0);
+
+                    // Parse TXDn or RXDn signal (normalized from TXD[n] or RXD[n])
+                    if pin.signal.starts_with("TXD") && pin.signal.len() == 4 {
+                        let line: u8 = pin.signal[3..].parse().unwrap_or(0);
+                        g.extend(quote! {
+                            impl_i2s_txd_pin!(#peri, #pin_name, #alt, #line);
+                        });
+                    } else if pin.signal.starts_with("RXD") && pin.signal.len() == 4 {
+                        let line: u8 = pin.signal[3..].parse().unwrap_or(0);
+                        g.extend(quote! {
+                            impl_i2s_rxd_pin!(#peri, #pin_name, #alt, #line);
+                        });
                     }
                 }
 
