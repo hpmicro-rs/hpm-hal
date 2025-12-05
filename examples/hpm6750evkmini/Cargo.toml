@@ -3,6 +3,11 @@ name = "hpm6750evkmini"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = []
+time-driver-gptmr0 = ["hpm-hal/time-driver-gptmr0"]
+time-driver-gptmr1 = ["hpm-hal/time-driver-gptmr1"]
+
 [dependencies]
 defmt = "1.0.1"
 defmt-rtt = "1.1.0"
