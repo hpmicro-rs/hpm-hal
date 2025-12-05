@@ -16,23 +16,52 @@
 //!
 //! # Example
 //!
+//! Single channel:
 //! ```rust,ignore
-//! use hpm_hal::pwm::{SimplePwm, SimplePwmConfig, Channel};
+//! use hpm_hal::pwm::{SimplePwm, SimplePwmConfig};
 //!
 //! let config = SimplePwmConfig {
 //!     frequency: Hertz(20_000),
 //!     ..Default::default()
 //! };
 //!
-//! let mut pwm = SimplePwm::new(p.PWM1, &mut p.PA23, config);
-//! pwm.set_duty(Channel::Ch7, pwm.max_duty() / 2); // 50%
-//! pwm.enable(Channel::Ch7);
+//! // Create PWM with channel 0 configured
+//! let mut pwm = SimplePwm::new_ch0(p.PWM0, p.PA28, config);
+//! pwm.set_duty_ch0(pwm.max_duty() / 2); // 50%
+//! ```
+//!
+//! Multiple channels (RGB LED):
+//! ```rust,ignore
+//! let mut pwm1 = SimplePwm::new(p.PWM1, config.clone());
+//! pwm1.enable_ch0(p.PB19); // Red
+//! pwm1.enable_ch1(p.PB18); // Green
+//!
+//! let mut pwm0 = SimplePwm::new(p.PWM0, config);
+//! pwm0.enable_ch7(p.PB20); // Blue
+//!
+//! pwm1.set_duty_ch0(r);
+//! pwm1.set_duty_ch1(g);
+//! pwm0.set_duty_ch7(b);
 //! ```
 
 use embassy_hal_internal::Peri;
 
 use crate::pac;
 use crate::time::Hertz;
+
+// Pin traits for PWM channels
+pin_trait!(Ch0Pin, Instance);
+pin_trait!(Ch1Pin, Instance);
+pin_trait!(Ch2Pin, Instance);
+pin_trait!(Ch3Pin, Instance);
+pin_trait!(Ch4Pin, Instance);
+pin_trait!(Ch5Pin, Instance);
+pin_trait!(Ch6Pin, Instance);
+pin_trait!(Ch7Pin, Instance);
+
+// Fault input pins
+pin_trait!(Fault0Pin, Instance);
+pin_trait!(Fault1Pin, Instance);
 
 /// PWM output channel index (0-7)
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -160,13 +189,13 @@ impl Default for SimplePwmConfig {
 pub struct SimplePwm<'d, T: Instance> {
     _peri: Peri<'d, T>,
     reload: u32,
+    polarity: Polarity,
 }
 
 impl<'d, T: Instance> SimplePwm<'d, T> {
-    /// Create a new SimplePwm.
+    /// Create a new SimplePwm without configuring any channel.
     ///
-    /// This configures the PWM with the given frequency.
-    /// Use `enable(channel)` to start output on a specific channel.
+    /// Use `enable_chX()` to configure and enable specific channels.
     pub fn new(peri: Peri<'d, T>, config: SimplePwmConfig) -> Self {
         T::add_resource_group(0);
 
@@ -196,7 +225,67 @@ impl<'d, T: Instance> SimplePwm<'d, T> {
         // Start counter
         r.gcr().modify(|w| w.set_cen(true));
 
-        Self { _peri: peri, reload }
+        Self {
+            _peri: peri,
+            reload,
+            polarity: config.polarity,
+        }
+    }
+
+    /// Create SimplePwm with channel 0 configured.
+    pub fn new_ch0(peri: Peri<'d, T>, pin: Peri<'d, impl Ch0Pin<T>>, config: SimplePwmConfig) -> Self {
+        let mut this = Self::new(peri, config);
+        this.enable_ch0(pin);
+        this
+    }
+
+    /// Create SimplePwm with channel 1 configured.
+    pub fn new_ch1(peri: Peri<'d, T>, pin: Peri<'d, impl Ch1Pin<T>>, config: SimplePwmConfig) -> Self {
+        let mut this = Self::new(peri, config);
+        this.enable_ch1(pin);
+        this
+    }
+
+    /// Create SimplePwm with channel 2 configured.
+    pub fn new_ch2(peri: Peri<'d, T>, pin: Peri<'d, impl Ch2Pin<T>>, config: SimplePwmConfig) -> Self {
+        let mut this = Self::new(peri, config);
+        this.enable_ch2(pin);
+        this
+    }
+
+    /// Create SimplePwm with channel 3 configured.
+    pub fn new_ch3(peri: Peri<'d, T>, pin: Peri<'d, impl Ch3Pin<T>>, config: SimplePwmConfig) -> Self {
+        let mut this = Self::new(peri, config);
+        this.enable_ch3(pin);
+        this
+    }
+
+    /// Create SimplePwm with channel 4 configured.
+    pub fn new_ch4(peri: Peri<'d, T>, pin: Peri<'d, impl Ch4Pin<T>>, config: SimplePwmConfig) -> Self {
+        let mut this = Self::new(peri, config);
+        this.enable_ch4(pin);
+        this
+    }
+
+    /// Create SimplePwm with channel 5 configured.
+    pub fn new_ch5(peri: Peri<'d, T>, pin: Peri<'d, impl Ch5Pin<T>>, config: SimplePwmConfig) -> Self {
+        let mut this = Self::new(peri, config);
+        this.enable_ch5(pin);
+        this
+    }
+
+    /// Create SimplePwm with channel 6 configured.
+    pub fn new_ch6(peri: Peri<'d, T>, pin: Peri<'d, impl Ch6Pin<T>>, config: SimplePwmConfig) -> Self {
+        let mut this = Self::new(peri, config);
+        this.enable_ch6(pin);
+        this
+    }
+
+    /// Create SimplePwm with channel 7 configured.
+    pub fn new_ch7(peri: Peri<'d, T>, pin: Peri<'d, impl Ch7Pin<T>>, config: SimplePwmConfig) -> Self {
+        let mut this = Self::new(peri, config);
+        this.enable_ch7(pin);
+        this
     }
 
     /// Get raw register access for advanced operations
@@ -211,10 +300,8 @@ impl<'d, T: Instance> SimplePwm<'d, T> {
         self.reload
     }
 
-    /// Configure and enable a channel for PWM output.
-    ///
-    /// The comparator with the same index as the channel is used.
-    pub fn enable(&mut self, ch: Channel) {
+    // Internal: configure and enable a channel
+    fn configure_channel(&mut self, ch: Channel) {
         let r = T::regs();
         let idx = ch.index();
 
@@ -228,7 +315,7 @@ impl<'d, T: Instance> SimplePwm<'d, T> {
         r.chcfg(idx).modify(|w| {
             w.set_cmpselbeg(idx as u8);
             w.set_cmpselend(idx as u8);
-            w.set_outpol(false); // Active high
+            w.set_outpol(self.polarity == Polarity::ActiveLow);
         });
 
         // Enable output
@@ -238,7 +325,55 @@ impl<'d, T: Instance> SimplePwm<'d, T> {
         });
     }
 
-    /// Disable a channel's output
+    /// Configure and enable channel 0.
+    pub fn enable_ch0(&mut self, pin: Peri<'d, impl Ch0Pin<T>>) {
+        pin.set_as_alt(pin.alt_num());
+        self.configure_channel(Channel::Ch0);
+    }
+
+    /// Configure and enable channel 1.
+    pub fn enable_ch1(&mut self, pin: Peri<'d, impl Ch1Pin<T>>) {
+        pin.set_as_alt(pin.alt_num());
+        self.configure_channel(Channel::Ch1);
+    }
+
+    /// Configure and enable channel 2.
+    pub fn enable_ch2(&mut self, pin: Peri<'d, impl Ch2Pin<T>>) {
+        pin.set_as_alt(pin.alt_num());
+        self.configure_channel(Channel::Ch2);
+    }
+
+    /// Configure and enable channel 3.
+    pub fn enable_ch3(&mut self, pin: Peri<'d, impl Ch3Pin<T>>) {
+        pin.set_as_alt(pin.alt_num());
+        self.configure_channel(Channel::Ch3);
+    }
+
+    /// Configure and enable channel 4.
+    pub fn enable_ch4(&mut self, pin: Peri<'d, impl Ch4Pin<T>>) {
+        pin.set_as_alt(pin.alt_num());
+        self.configure_channel(Channel::Ch4);
+    }
+
+    /// Configure and enable channel 5.
+    pub fn enable_ch5(&mut self, pin: Peri<'d, impl Ch5Pin<T>>) {
+        pin.set_as_alt(pin.alt_num());
+        self.configure_channel(Channel::Ch5);
+    }
+
+    /// Configure and enable channel 6.
+    pub fn enable_ch6(&mut self, pin: Peri<'d, impl Ch6Pin<T>>) {
+        pin.set_as_alt(pin.alt_num());
+        self.configure_channel(Channel::Ch6);
+    }
+
+    /// Configure and enable channel 7.
+    pub fn enable_ch7(&mut self, pin: Peri<'d, impl Ch7Pin<T>>) {
+        pin.set_as_alt(pin.alt_num());
+        self.configure_channel(Channel::Ch7);
+    }
+
+    /// Disable a channel's output.
     pub fn disable(&mut self, ch: Channel) {
         T::regs().pwmcfg(ch.index()).modify(|w| w.set_oen(false));
     }
@@ -250,6 +385,54 @@ impl<'d, T: Instance> SimplePwm<'d, T> {
             w.set_cmp(duty);
             w.set_xcmp(0);
         });
+    }
+
+    /// Set duty cycle for channel 0.
+    #[inline]
+    pub fn set_duty_ch0(&mut self, duty: u32) {
+        self.set_duty(Channel::Ch0, duty);
+    }
+
+    /// Set duty cycle for channel 1.
+    #[inline]
+    pub fn set_duty_ch1(&mut self, duty: u32) {
+        self.set_duty(Channel::Ch1, duty);
+    }
+
+    /// Set duty cycle for channel 2.
+    #[inline]
+    pub fn set_duty_ch2(&mut self, duty: u32) {
+        self.set_duty(Channel::Ch2, duty);
+    }
+
+    /// Set duty cycle for channel 3.
+    #[inline]
+    pub fn set_duty_ch3(&mut self, duty: u32) {
+        self.set_duty(Channel::Ch3, duty);
+    }
+
+    /// Set duty cycle for channel 4.
+    #[inline]
+    pub fn set_duty_ch4(&mut self, duty: u32) {
+        self.set_duty(Channel::Ch4, duty);
+    }
+
+    /// Set duty cycle for channel 5.
+    #[inline]
+    pub fn set_duty_ch5(&mut self, duty: u32) {
+        self.set_duty(Channel::Ch5, duty);
+    }
+
+    /// Set duty cycle for channel 6.
+    #[inline]
+    pub fn set_duty_ch6(&mut self, duty: u32) {
+        self.set_duty(Channel::Ch6, duty);
+    }
+
+    /// Set duty cycle for channel 7.
+    #[inline]
+    pub fn set_duty_ch7(&mut self, duty: u32) {
+        self.set_duty(Channel::Ch7, duty);
     }
 
     /// Set duty cycle as percentage (0-100)
@@ -490,37 +673,63 @@ impl<'d, T: Instance> ComplementaryPwm<'d, T> {
 pub(crate) trait SealedInstance {
     fn regs() -> pac::pwm::Pwm;
 
+    /// MOT resource index for this PWM instance
+    const MOT_RESOURCE: usize;
+
     /// Add PWM to resource group.
     /// PWM belongs to MOT subsystem, clock is controlled via MOT resource.
-    fn add_resource_group(group: usize);
+    fn add_resource_group(group: usize) {
+        crate::sysctl::clock_add_to_group(Self::MOT_RESOURCE, group);
+    }
 
     /// Get PWM clock frequency (from AHB for MOT subsystem)
-    fn frequency() -> Hertz;
+    fn frequency() -> Hertz {
+        crate::sysctl::clocks().ahb
+    }
 }
 
 /// PWM peripheral instance
 #[allow(private_bounds)]
 pub trait Instance: SealedInstance + crate::PeripheralType + 'static {}
 
-foreach_peripheral!(
-    (pwm, $inst:ident) => {
-        impl SealedInstance for crate::peripherals::$inst {
-            fn regs() -> pac::pwm::Pwm {
-                pac::$inst
-            }
+// PWM0 -> MOT0, PWM1 -> MOT1, PWM2 -> MOT2, PWM3 -> MOT3
+#[cfg(peri_pwm0)]
+impl SealedInstance for crate::peripherals::PWM0 {
+    fn regs() -> pac::pwm::Pwm {
+        pac::PWM0
+    }
+    const MOT_RESOURCE: usize = pac::resources::MOT0;
+}
+#[cfg(peri_pwm0)]
+impl Instance for crate::peripherals::PWM0 {}
 
-            fn add_resource_group(group: usize) {
-                // PWM belongs to MOT subsystem, use MOT0 resource
-                crate::sysctl::clock_add_to_group(pac::resources::MOT0, group);
-            }
+#[cfg(peri_pwm1)]
+impl SealedInstance for crate::peripherals::PWM1 {
+    fn regs() -> pac::pwm::Pwm {
+        pac::PWM1
+    }
+    const MOT_RESOURCE: usize = pac::resources::MOT1;
+}
+#[cfg(peri_pwm1)]
+impl Instance for crate::peripherals::PWM1 {}
 
-            fn frequency() -> Hertz {
-                // PWM uses AHB clock (MOT subsystem)
-                crate::sysctl::clocks().ahb
-            }
-        }
+#[cfg(peri_pwm2)]
+impl SealedInstance for crate::peripherals::PWM2 {
+    fn regs() -> pac::pwm::Pwm {
+        pac::PWM2
+    }
+    const MOT_RESOURCE: usize = pac::resources::MOT2;
+}
+#[cfg(peri_pwm2)]
+impl Instance for crate::peripherals::PWM2 {}
 
-        impl Instance for crate::peripherals::$inst {}
-    };
-);
+#[cfg(peri_pwm3)]
+impl SealedInstance for crate::peripherals::PWM3 {
+    fn regs() -> pac::pwm::Pwm {
+        pac::PWM3
+    }
+    const MOT_RESOURCE: usize = pac::resources::MOT3;
+}
+#[cfg(peri_pwm3)]
+impl Instance for crate::peripherals::PWM3 {}
 
