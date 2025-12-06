@@ -60,6 +60,8 @@ pub mod usb;
 pub mod femc;
 #[cfg(i2s)]
 pub mod i2s;
+#[cfg(pdm)]
+pub mod pdm;
 #[cfg(rtc)]
 pub mod rtc;
 

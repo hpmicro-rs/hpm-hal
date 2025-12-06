@@ -373,6 +373,8 @@ fn main() {
         (("i2s", "MCLK"), quote!(crate::i2s::MclkPin)),
         (("i2s", "BCLK"), quote!(crate::i2s::BclkPin)),
         (("i2s", "FCLK"), quote!(crate::i2s::FclkPin)),
+        // PDM
+        (("pdm", "CLK"), quote!(crate::pdm::ClkPin)),
     ]
     .into();
 
@@ -453,6 +455,18 @@ fn main() {
                             impl_i2s_rxd_pin!(#peri, #pin_name, #alt, #line);
                         });
                     }
+                }
+
+                // PDM D0-D3 data pins have line indices
+                // Note: pinmux.rs normalizes D[0] -> D0
+                if regs.kind == "pdm" && pin.signal.starts_with('D') && pin.signal.len() == 2 {
+                    let peri = format_ident!("{}", p.name);
+                    let pin_name = format_ident!("{}", pin.pin);
+                    let alt = pin.alt.unwrap_or(0);
+                    let line: u8 = pin.signal[1..].parse().unwrap_or(0);
+                    g.extend(quote! {
+                        impl_pdm_data_pin!(#peri, #pin_name, #alt, #line);
+                    });
                 }
 
                 // if regs.kind == "dac"
