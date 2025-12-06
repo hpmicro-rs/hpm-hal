@@ -598,3 +598,256 @@ fn core_local_mem_to_sys_address(core_id: u8, addr: u32) -> u32 {
         sys_addr
     }
 }
+
+// ============================================================================
+// Ring Buffer Support for v1
+// ============================================================================
+
+use core::task::Waker;
+
+use super::ringbuffer::{DmaCtrl, Error, ReadableDmaRingBuffer};
+
+/// Linked descriptor for DMA circular mode
+///
+/// This structure must be 8-byte aligned and matches the hardware format.
+#[repr(C, align(8))]
+pub struct LinkedDescriptor {
+    pub ctrl: u32,
+    pub trans_size: u32,
+    pub src_addr: u32,
+    pub src_addr_high: u32,
+    pub dst_addr: u32,
+    pub dst_addr_high: u32,
+    pub linked_ptr: u32,
+    pub linked_ptr_high: u32,
+}
+
+impl LinkedDescriptor {
+    pub const fn new() -> Self {
+        Self {
+            ctrl: 0,
+            trans_size: 0,
+            src_addr: 0,
+            src_addr_high: 0,
+            dst_addr: 0,
+            dst_addr_high: 0,
+            linked_ptr: 0,
+            linked_ptr_high: 0,
+        }
+    }
+}
+
+struct DmaCtrlImpl<'a>(Peri<'a, AnyChannel>);
+
+impl DmaCtrl for DmaCtrlImpl<'_> {
+    fn get_remaining_transfers(&self) -> usize {
+        self.0.get_remaining_transfers() as usize
+    }
+
+    fn reset_complete_count(&mut self) -> usize {
+        let state = &STATE[self.0.id as usize];
+        state.complete_count.swap(0, Ordering::AcqRel)
+    }
+
+    fn set_waker(&mut self, waker: &Waker) {
+        STATE[self.0.id as usize].waker.register(waker);
+    }
+}
+
+/// Ring buffer for receiving data using DMA circular mode (v1)
+///
+/// Uses linked descriptor pointing to itself for circular operation.
+pub struct ReadableRingBuffer<'a, W: Word> {
+    channel: Peri<'a, AnyChannel>,
+    ringbuf: ReadableDmaRingBuffer<'a, W>,
+    // Linked descriptor for circular mode - must be kept alive
+    _descriptor: &'a mut LinkedDescriptor,
+}
+
+impl<'a, W: Word> ReadableRingBuffer<'a, W> {
+    /// Create a new readable ring buffer
+    ///
+    /// # Safety
+    /// The caller must ensure:
+    /// - buffer and peripheral address remain valid
+    /// - descriptor remains valid and is 8-byte aligned
+    pub unsafe fn new(
+        channel: Peri<'a, impl Channel>,
+        request: Request,
+        peri_addr: *mut W,
+        buffer: &'a mut [W],
+        descriptor: &'a mut LinkedDescriptor,
+        _options: TransferOptions,
+    ) -> Self {
+        let channel: Peri<'a, AnyChannel> = channel.into();
+        let info = channel.info();
+        let r = info.dma.regs();
+        let ch = info.num;
+        let mux_ch = info.mux_num;
+
+        let data_size = W::size();
+        let len = buffer.len();
+
+        let mut src_addr = peri_addr as u32;
+        let mut dst_addr = buffer.as_mut_ptr() as u32;
+
+        #[cfg(hpm67)]
+        {
+            let core_id = 0;
+            src_addr = core_local_mem_to_sys_address(core_id, src_addr);
+            dst_addr = core_local_mem_to_sys_address(core_id, dst_addr);
+        }
+
+        // Configure DMAMUX
+        super::dmamux::configure_dmamux(mux_ch, request);
+
+        // Build ctrl register value for circular RX
+        let ctrl = {
+            let mut val = 0u32;
+            // Source: peripheral, fixed address, handshake mode
+            val |= (vals::Mode::HANDSHAKE.to_bits() as u32) << 24; // srcmode
+            val |= (AddrCtrl::FIXED.to_bits() as u32) << 14; // srcaddrctrl
+            val |= (data_size.width() as u32) << 8; // srcwidth
+
+            // Destination: memory, increment address, normal mode
+            val |= (vals::Mode::NORMAL.to_bits() as u32) << 26; // dstmode
+            val |= (AddrCtrl::INCREMENT.to_bits() as u32) << 16; // dstaddrctrl
+            val |= (data_size.width() as u32) << 11; // dstwidth
+
+            // Request select
+            val |= (mux_ch as u32) << 20; // srcreqsel
+
+            // Burst size (default 1)
+            val |= 0 << 4; // srcburstsize
+
+            // Enable interrupts for ring buffer tracking
+            // TC interrupt enabled (mask = 0)
+
+            // Enable bit will be set when starting
+            val |= 1; // enable
+
+            val
+        };
+
+        // Setup linked descriptor pointing to itself for circular operation
+        let desc_addr = descriptor as *mut _ as u32;
+
+        #[cfg(hpm67)]
+        let desc_addr = core_local_mem_to_sys_address(0, desc_addr);
+
+        descriptor.ctrl = ctrl;
+        descriptor.trans_size = len as u32;
+        descriptor.src_addr = src_addr;
+        descriptor.src_addr_high = 0;
+        descriptor.dst_addr = dst_addr;
+        descriptor.dst_addr_high = 0;
+        descriptor.linked_ptr = desc_addr; // Point to self for circular
+        descriptor.linked_ptr_high = 0;
+
+        // Configure channel registers
+        let ch_cr = r.chctrl(ch);
+
+        ch_cr.src_addr().write_value(src_addr);
+        ch_cr.dst_addr().write_value(dst_addr);
+        ch_cr.tran_size().modify(|w| w.0 = len as u32);
+        ch_cr.llpointer().modify(|w| w.0 = desc_addr); // Link to descriptor
+
+        // Clear interrupts
+        r.int_status().write(|w| {
+            w.set_abort(ch, true);
+            w.set_tc(ch, true);
+            w.set_error(ch, true);
+        });
+
+        // Configure control register (without enable)
+        ch_cr.ctrl().write(|w| {
+            w.set_srcbusinfidx(false);
+            w.set_dstbusinfidx(false);
+            w.set_priority(false);
+            w.set_srcburstsize(0);
+            w.set_srcwidth(data_size.width());
+            w.set_dstwidth(data_size.width());
+            w.set_srcmode(vals::Mode::HANDSHAKE);
+            w.set_dstmode(vals::Mode::NORMAL);
+            w.set_srcaddrctrl(AddrCtrl::FIXED);
+            w.set_dstaddrctrl(AddrCtrl::INCREMENT);
+            w.set_srcreqsel(mux_ch as u8);
+            w.set_inttcmask(false); // Enable TC interrupt
+            w.set_interrmask(false);
+            w.set_intabtmask(true);
+            w.set_enable(false);
+        });
+
+        Self {
+            channel,
+            ringbuf: ReadableDmaRingBuffer::new(buffer),
+            _descriptor: descriptor,
+        }
+    }
+
+    /// Start the ring buffer operation
+    pub fn start(&mut self) {
+        let info = self.channel.info();
+        let r = info.dma.regs();
+        let ch = info.num;
+
+        r.chctrl(ch).ctrl().modify(|w| w.set_enable(true));
+    }
+
+    /// Clear all data in the ring buffer
+    pub fn clear(&mut self) {
+        self.ringbuf.reset(&mut DmaCtrlImpl(self.channel.reborrow()));
+    }
+
+    /// Read elements from the ring buffer
+    ///
+    /// Returns (bytes_read, bytes_remaining)
+    pub fn read(&mut self, buf: &mut [W]) -> Result<(usize, usize), Error> {
+        self.ringbuf.read(&mut DmaCtrlImpl(self.channel.reborrow()), buf)
+    }
+
+    /// Read an exact number of elements (async)
+    pub async fn read_exact(&mut self, buffer: &mut [W]) -> Result<usize, Error> {
+        self.ringbuf
+            .read_exact(&mut DmaCtrlImpl(self.channel.reborrow()), buffer)
+            .await
+    }
+
+    /// Get the current readable length
+    pub fn len(&mut self) -> Result<usize, Error> {
+        self.ringbuf.len(&mut DmaCtrlImpl(self.channel.reborrow()))
+    }
+
+    /// Get the buffer capacity
+    pub const fn capacity(&self) -> usize {
+        self.ringbuf.cap()
+    }
+
+    /// Set a waker for async notifications
+    pub fn set_waker(&mut self, waker: &Waker) {
+        DmaCtrlImpl(self.channel.reborrow()).set_waker(waker);
+    }
+
+    /// Request pause (keeps configuration)
+    pub fn request_pause(&mut self) {
+        self.channel.abort();
+    }
+
+    /// Check if DMA is still running
+    pub fn is_running(&self) -> bool {
+        self.channel.is_running()
+    }
+
+    /// Get remaining DMA transfers (for debugging)
+    pub fn get_remaining_transfers(&self) -> u32 {
+        self.channel.get_remaining_transfers()
+    }
+}
+
+impl<W: Word> Drop for ReadableRingBuffer<'_, W> {
+    fn drop(&mut self) {
+        self.request_pause();
+        while self.is_running() {}
+        fence(Ordering::SeqCst);
+    }
+}
