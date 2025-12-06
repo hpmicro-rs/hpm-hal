@@ -235,33 +235,14 @@ fn debug_print_pin_config() {
     );
 }
 
-/// Configure I2S0 audio clock for PDM
+/// Debug: Verify audio clock configuration
 ///
-/// This is a temporary workaround until hpm-hal has proper audio clock API.
-/// Clock path: PLL3 -> AUD0 -> I2S0
-fn configure_pdm_audio_clock() {
-    use hpm_hal::pac::sysctl::vals::{ClockMux, I2sClkMux};
-    use hpm_hal::pac::{SYSCTL, clocks, resources};
-    use hpm_hal::sysctl::clock_add_to_group;
-
-    // Add PDM and I2S0 to resource group 0
-    clock_add_to_group(resources::PDM0, 0);
-    clock_add_to_group(resources::I2S0, 0);
-
-    // Configure AUD0 clock: PLL3_CLK0, div=25
-    // PLL3 default is ~614.4 MHz, so AUD0 = 614.4/25 = 24.576 MHz
-    // This gives MCLK for 16kHz sample rate with CIC_DEC_RATIO=64
-    SYSCTL.clock(clocks::AUD0).modify(|w| {
-        w.set_mux(ClockMux::PLL3CLK0); // PLL3_CLK0
-        w.set_div(24); // div = 25
-    });
-    while SYSCTL.clock(clocks::AUD0).read().loc_busy() {}
-
-    // Set I2S0 clock source to AUD0 (mux=1)
-    // mux: 0=AHB, 1=I2S0(AUD0), 2=I2S1(AUD1), 3=I2S2(AUD2)
-    SYSCTL.i2sclk(0).modify(|w| w.set_mux(I2sClkMux::I2S0));
-
-    info!("Audio clock configured");
+/// Audio clocks are now configured by hpm_hal::init() via sysctl::Config::default():
+/// - AUD0/AUD1/AUD2 = PLL3_CLK0 / 25 = 24.576MHz
+/// - I2S clock source is set by PDM driver in configure_i2s0_for_pdm()
+fn verify_audio_clock() {
+    let aud0_freq = hpm_hal::sysctl::get_audio_clock_freq(0);
+    info!("Audio clock AUD0: {} Hz", aud0_freq.0);
 }
 
 #[embassy_executor::main(entry = "hpm_hal::entry")]
@@ -271,8 +252,8 @@ async fn main(_spawner: Spawner) {
 
     info!("=== PDM blocking read example ===");
 
-    // Configure audio clock first
-    configure_pdm_audio_clock();
+    // Audio clocks are configured by hpm_hal::init() via Config::default()
+    verify_audio_clock();
 
     info!("--- After clock config ---");
     debug_print_clock_regs();
