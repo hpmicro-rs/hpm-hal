@@ -141,10 +141,76 @@ impl Default for ChannelPolarity {
     }
 }
 
+/// Common audio sample rates for PDM
+///
+/// These rates work with the default 24.576MHz MCLK (PLL3/25).
+/// For 44.1kHz series, a different MCLK would be needed.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum SampleRate {
+    /// 8000 Hz - Telephone quality, low bandwidth voice
+    Hz8000,
+    /// 16000 Hz - Wideband voice, suitable for speech recognition
+    Hz16000,
+    /// 32000 Hz - High quality voice
+    Hz32000,
+}
+
+impl SampleRate {
+    /// Get the sample rate in Hz
+    pub const fn hz(self) -> u32 {
+        match self {
+            SampleRate::Hz8000 => 8000,
+            SampleRate::Hz16000 => 16000,
+            SampleRate::Hz32000 => 32000,
+        }
+    }
+
+    /// Get the PDM clock half divider (pdm_clk_hfdiv) for this sample rate
+    ///
+    /// Assumes MCLK = 24.576 MHz and CIC decimation ratio = 64
+    /// Formula: sample_rate = MCLK / (2 * (hfdiv + 1)) / cic_ratio / 3
+    pub(crate) const fn pdm_clk_hfdiv(self, cic_ratio: u8) -> u8 {
+        // MCLK = 24.576 MHz, DEC_AFTER_CIC = 3
+        // hfdiv = MCLK / (sample_rate * 2 * cic_ratio * 3) - 1
+        const MCLK: u32 = 24_576_000;
+        const DEC_AFTER_CIC: u32 = 3;
+        let k = self.hz() * 2 * cic_ratio as u32 * DEC_AFTER_CIC;
+        ((MCLK / k) - 1) as u8
+    }
+
+    /// Get the I2S BCLK divider for this sample rate
+    ///
+    /// Assumes MCLK = 24.576 MHz, TDM mode with 8 channels, 32-bit per channel
+    /// BCLK = sample_rate * 32 * 8 = sample_rate * 256
+    /// BCLK_DIV = MCLK / BCLK
+    pub(crate) const fn bclk_div(self) -> u16 {
+        const MCLK: u32 = 24_576_000;
+        const BITS_PER_FRAME: u32 = 32 * 8; // 8 channels, 32-bit each
+        let bclk = self.hz() * BITS_PER_FRAME;
+        (MCLK / bclk) as u16
+    }
+
+    /// Check if the sample rate configuration is valid
+    pub(crate) const fn is_valid(self, cic_ratio: u8) -> bool {
+        let hfdiv = self.pdm_clk_hfdiv(cic_ratio);
+        // hfdiv must be 1-15 (0 means bypass, not recommended)
+        hfdiv >= 1 && hfdiv <= 15
+    }
+}
+
+impl Default for SampleRate {
+    fn default() -> Self {
+        SampleRate::Hz16000
+    }
+}
+
 /// PDM configuration
 #[derive(Clone, Copy)]
 #[non_exhaustive]
 pub struct Config {
+    /// Target sample rate
+    pub sample_rate: SampleRate,
     /// Enabled channels
     pub channels: ChannelMask,
     /// Channel polarity
@@ -166,6 +232,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            sample_rate: SampleRate::Hz16000,
             channels: ChannelMask::DUAL_STEREO,
             polarity: ChannelPolarity::DEFAULT,
             cic_decimation_ratio: 64,
@@ -175,6 +242,14 @@ impl Default for Config {
             enable_clock_output: true,
             sof_at_falling_edge: true,
         }
+    }
+}
+
+impl Config {
+    /// Create a new config with the specified sample rate
+    pub const fn with_sample_rate(mut self, rate: SampleRate) -> Self {
+        self.sample_rate = rate;
+        self
     }
 }
 
@@ -316,16 +391,16 @@ impl<'d, T: Instance> Pdm<'d, T> {
         // regs.ctrl().modify(|w| w.set_sftrst(true));
         // while regs.ctrl().read().sftrst() {}
 
-        // Configure control register (write entire register like C SDK)
-        // Default PDM_CLK_HFDIV = 3 for 16kHz @ 24.576MHz MCLK
+        // Configure control register
+        // PDM_CLK_HFDIV calculated from sample rate
         // sample_rate = MCLK / (2 * (div + 1)) / cic_dec_ratio / 3
-        //             = 24.576M / (2 * 4) / 64 / 3 = 16kHz
+        let pdm_clk_hfdiv = self.config.sample_rate.pdm_clk_hfdiv(self.config.cic_decimation_ratio);
         regs.ctrl().write(|w| {
             // Note: HPF requires proper coefficient setup, skip for now
             w.set_sof_fedge(self.config.sof_at_falling_edge);
             w.set_pdm_clk_oe(self.config.enable_clock_output);
             w.set_pdm_clk_div_bypass(false);
-            w.set_pdm_clk_hfdiv(3); // Default divider for 16kHz
+            w.set_pdm_clk_hfdiv(pdm_clk_hfdiv);
             w.set_capt_dly(self.config.capture_delay);
             w.set_dec_aft_cic(DEC_AFTER_CIC as u8);
         });
@@ -375,19 +450,16 @@ impl<'d, T: Instance> Pdm<'d, T> {
             w.set_rxfifoclr(false);
         });
 
-        // Calculate BCLK divider for PDM
-        // BCLK = sample_rate * channel_length * channel_num_per_frame
-        // For PDM: 16kHz * 32bits * 8ch = 4.096MHz
+        // Calculate BCLK divider from sample rate
+        // BCLK = sample_rate * 32bits * 8ch
         // BCLK_DIV = MCLK / BCLK
-        // With MCLK = 24.576MHz: 24576000 / 4096000 = 6
-        // Default to div=6 for 16kHz sample rate
-        const PDM_BCLK_DIV: u16 = 6;
+        let bclk_div = self.config.sample_rate.bclk_div();
 
         // Configure I2S format for PDM: TDM mode, 8 channels, 32-bit, MSB justified
         // Gate BCLK before configuration
         i2s.cfgr().modify(|w| w.set_bclk_gateoff(true));
         i2s.cfgr().modify(|w| {
-            w.set_bclk_div(PDM_BCLK_DIV);
+            w.set_bclk_div(bclk_div);
             w.set_tdm_en(true);
             w.set_ch_max(8);
             w.set_datsiz(DataSize::_32BIT);
@@ -634,11 +706,12 @@ impl<'d, T: Instance> PdmDma<'d, T> {
         let pdm_regs = T::regs();
         pdm_regs.run().modify(|w| w.set_pdm_en(false));
 
+        let pdm_clk_hfdiv = config.sample_rate.pdm_clk_hfdiv(config.cic_decimation_ratio);
         pdm_regs.ctrl().write(|w| {
             w.set_sof_fedge(config.sof_at_falling_edge);
             w.set_pdm_clk_oe(config.enable_clock_output);
             w.set_pdm_clk_div_bypass(false);
-            w.set_pdm_clk_hfdiv(3);
+            w.set_pdm_clk_hfdiv(pdm_clk_hfdiv);
             w.set_capt_dly(config.capture_delay);
             w.set_dec_aft_cic(DEC_AFTER_CIC as u8);
         });
@@ -703,11 +776,12 @@ impl<'d, T: Instance> PdmDma<'d, T> {
             w.set_rxfifoclr(false);
         });
 
-        const PDM_BCLK_DIV: u16 = 6;
+        // Calculate BCLK divider from sample rate
+        let bclk_div = config.sample_rate.bclk_div();
 
         i2s.cfgr().modify(|w| w.set_bclk_gateoff(true));
         i2s.cfgr().modify(|w| {
-            w.set_bclk_div(PDM_BCLK_DIV);
+            w.set_bclk_div(bclk_div);
             w.set_tdm_en(true);
             w.set_ch_max(8);
             w.set_datsiz(DataSize::_32BIT);
