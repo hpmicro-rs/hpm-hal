@@ -272,8 +272,6 @@ impl<'d, T: Instance> I2S<'d, T> {
             w.set_tx_en(1); // Enable line 0
         });
 
-        defmt::info!("I2S configured: sample_rate={}, format={:?}", config.sample_rate, config.format);
-
         Self {
             _peri: peri,
             tx_line: Some(DataLine::Line0),
@@ -285,14 +283,12 @@ impl<'d, T: Instance> I2S<'d, T> {
     pub fn start(&mut self) {
         let regs = T::regs();
         regs.ctrl().modify(|w| w.set_i2s_en(true));
-        defmt::info!("I2S started");
     }
 
     /// Stop I2S transfer
     pub fn stop(&mut self) {
         let regs = T::regs();
         regs.ctrl().modify(|w| w.set_i2s_en(false));
-        defmt::info!("I2S stopped");
     }
 
     /// Get TX FIFO level for the configured line
