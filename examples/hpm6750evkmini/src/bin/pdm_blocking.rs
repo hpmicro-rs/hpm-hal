@@ -310,6 +310,11 @@ async fn main(_spawner: Spawner) {
     debug_print_pdm_regs();
     debug_print_i2s_regs();
 
+    // Wait for CIC filter to stabilize and clear startup transient errors
+    Timer::after_millis(10).await;
+    pdm.clear_errors();
+    info!("Cleared startup transient errors");
+
     // Read buffer
     let mut buf = [0u32; 64];
     let mut sample_count: u32 = 0;
@@ -319,7 +324,7 @@ async fn main(_spawner: Spawner) {
         pdm.read_blocking(&mut buf);
         sample_count += buf.len() as u32;
 
-        // Check for errors
+        // Check for errors (should not occur after stabilization)
         if let Err(e) = pdm.check_errors() {
             info!("PDM error: {:?}", e);
             pdm.clear_errors();
