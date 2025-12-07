@@ -266,25 +266,7 @@ pub trait DPin<T: Instance>: crate::gpio::Pin {
     fn line(&self) -> DataLine;
 }
 
-#[macro_export]
-macro_rules! impl_pdm_data_pin {
-    ($peri:ident, $pin:ident, $alt:expr, $line:expr) => {
-        impl $crate::pdm::DPin<$crate::peripherals::$peri> for $crate::peripherals::$pin {
-            fn alt_num(&self) -> u8 {
-                $alt
-            }
-            fn line(&self) -> $crate::pdm::DataLine {
-                match $line {
-                    0 => $crate::pdm::DataLine::Line0,
-                    1 => $crate::pdm::DataLine::Line1,
-                    2 => $crate::pdm::DataLine::Line2,
-                    3 => $crate::pdm::DataLine::Line3,
-                    _ => $crate::pdm::DataLine::Line0,
-                }
-            }
-        }
-    };
-}
+// impl_pdm_data_pin! macro moved to macros.rs for use in generated code
 
 // - MARK: Instance trait
 
@@ -315,6 +297,8 @@ pub struct Pdm<'d, T: Instance> {
     #[cfg(i2s)]
     _i2s0: Peri<'d, crate::peripherals::I2S0>,
     config: Config,
+    /// Bitmask of enabled data lines (D0=bit0, D1=bit1, etc.)
+    enabled_lines: u8,
 }
 
 impl<'d, T: Instance> Pdm<'d, T> {
@@ -344,6 +328,88 @@ impl<'d, T: Instance> Pdm<'d, T> {
             _peri: peri,
             _i2s0: i2s0,
             config,
+            enabled_lines: 0b0001, // D0 only
+        };
+
+        this.configure();
+        this
+    }
+
+    /// Create a new PDM driver with 2 data lines (4 channels max)
+    ///
+    /// - D0: ch0 + ch4 (stereo pair 1)
+    /// - D1: ch1 + ch5 (stereo pair 2)
+    #[cfg(i2s)]
+    pub fn new_2line(
+        peri: Peri<'d, T>,
+        i2s0: Peri<'d, crate::peripherals::I2S0>,
+        clk: Peri<'d, impl ClkPin<T>>,
+        d0: Peri<'d, impl DPin<T>>,
+        d1: Peri<'d, impl DPin<T>>,
+        config: Config,
+    ) -> Self {
+        // Enable peripheral clocks
+        T::add_resource_group(0);
+        crate::sysctl::clock_add_to_group(crate::pac::resources::I2S0, 0);
+
+        // Configure pins
+        let clk_alt = clk.alt_num();
+        let d0_alt = d0.alt_num();
+        let d1_alt = d1.alt_num();
+        Self::configure_pin(&*clk, clk_alt);
+        Self::configure_pin(&*d0, d0_alt);
+        Self::configure_pin(&*d1, d1_alt);
+
+        let this = Self {
+            _peri: peri,
+            _i2s0: i2s0,
+            config,
+            enabled_lines: 0b0011, // D0 + D1
+        };
+
+        this.configure();
+        this
+    }
+
+    /// Create a new PDM driver with 4 data lines (8 channels max)
+    ///
+    /// - D0: ch0 + ch4 (stereo pair 1)
+    /// - D1: ch1 + ch5 (stereo pair 2)
+    /// - D2: ch2 + ch6 (stereo pair 3)
+    /// - D3: ch3 + ch7 (stereo pair 4)
+    #[cfg(i2s)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_4line(
+        peri: Peri<'d, T>,
+        i2s0: Peri<'d, crate::peripherals::I2S0>,
+        clk: Peri<'d, impl ClkPin<T>>,
+        d0: Peri<'d, impl DPin<T>>,
+        d1: Peri<'d, impl DPin<T>>,
+        d2: Peri<'d, impl DPin<T>>,
+        d3: Peri<'d, impl DPin<T>>,
+        config: Config,
+    ) -> Self {
+        // Enable peripheral clocks
+        T::add_resource_group(0);
+        crate::sysctl::clock_add_to_group(crate::pac::resources::I2S0, 0);
+
+        // Configure pins
+        let clk_alt = clk.alt_num();
+        let d0_alt = d0.alt_num();
+        let d1_alt = d1.alt_num();
+        let d2_alt = d2.alt_num();
+        let d3_alt = d3.alt_num();
+        Self::configure_pin(&*clk, clk_alt);
+        Self::configure_pin(&*d0, d0_alt);
+        Self::configure_pin(&*d1, d1_alt);
+        Self::configure_pin(&*d2, d2_alt);
+        Self::configure_pin(&*d3, d3_alt);
+
+        let this = Self {
+            _peri: peri,
+            _i2s0: i2s0,
+            config,
+            enabled_lines: 0b1111, // D0 + D1 + D2 + D3
         };
 
         this.configure();
@@ -475,12 +541,26 @@ impl<'d, T: Instance> Pdm<'d, T> {
             w.set_mclk_gateoff(false);  // Enable MCLK (ungate)
         });
 
-        // Set RX slot mask based on enabled channels
-        i2s.rxdslot(0).write(|w| w.set_en(self.config.channels.0 as u16));
+        // Configure RX slot mask for each enabled data line
+        // Each data line maps to specific channels:
+        //   D0: ch0 + ch4 (slot_mask = 0x11)
+        //   D1: ch1 + ch5 (slot_mask = 0x22)
+        //   D2: ch2 + ch6 (slot_mask = 0x44)
+        //   D3: ch3 + ch7 (slot_mask = 0x88)
+        // We AND with config.channels to only enable requested channels
+        let ch = self.config.channels.0;
+        const LINE_SLOT_MASKS: [u16; 4] = [0x11, 0x22, 0x44, 0x88];
+        
+        for line in 0..4 {
+            if self.enabled_lines & (1 << line) != 0 {
+                let slot_mask = LINE_SLOT_MASKS[line] & ch;
+                i2s.rxdslot(line).write(|w| w.set_en(slot_mask));
+            }
+        }
 
-        // Enable RX line 0
+        // Enable RX lines based on enabled_lines bitmask
         i2s.ctrl().modify(|w| {
-            w.set_rx_en(1);
+            w.set_rx_en(self.enabled_lines);
         });
     }
 
@@ -911,25 +991,6 @@ macro_rules! impl_pdm {
 #[cfg(peri_pdm)]
 impl_pdm!(PDM, PDM);
 
-// - MARK: Temporary pin trait impls for HPM6750EVKMini
-// TODO: Remove these once build.rs auto-generation is working
-
-// PY10 = PDM_CLK (alt 10)
-#[cfg(peri_pdm)]
-impl ClkPin<crate::peripherals::PDM> for crate::peripherals::PY10 {
-    fn alt_num(&self) -> u8 {
-        10
-    }
-}
-
-// PY11 = PDM_D0 (alt 10)
-#[cfg(peri_pdm)]
-impl DPin<crate::peripherals::PDM> for crate::peripherals::PY11 {
-    fn alt_num(&self) -> u8 {
-        10
-    }
-    fn line(&self) -> DataLine {
-        DataLine::Line0
-    }
-}
-
+// Pin traits are auto-generated by build.rs:
+// - ClkPin: from pdm.CLK signals
+// - DPin: from pdm.D0/D1/D2/D3 signals (via impl_pdm_data_pin! macro)
