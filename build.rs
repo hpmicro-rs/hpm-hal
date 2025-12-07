@@ -378,6 +378,9 @@ fn main() {
     ]
     .into();
 
+    // Track already generated PDM data pins to avoid duplicates
+    let mut pdm_data_pins_generated: HashSet<String> = HashSet::new();
+
     for p in METADATA.peripherals {
         if let Some(regs) = &p.registers {
             for pin in p.pins {
@@ -392,6 +395,26 @@ fn main() {
                     g.extend(quote! {
                         pin_trait_impl!(#tr, #peri, #pin_name, #alt);
                     })
+                }
+
+                // PDM data pins are special - they have line index (D0, D1, D2, D3)
+                // Use deduplication to avoid duplicate impls for same pin
+                if regs.kind == "pdm" && pin.signal.starts_with("D") {
+                    // Key is just the pin name since all PDM peripherals have the same name
+                    let pdm_key = pin.pin.to_string();
+                    if !pdm_data_pins_generated.contains(&pdm_key) {
+                        pdm_data_pins_generated.insert(pdm_key);
+                        let peri = format_ident!("{}", p.name);
+                        let pin_name = format_ident!("{}", pin.pin);
+                        let alt = pin.alt.unwrap_or(0);
+                        // Parse line index from signal name (D0->0, D1->1, D2->2, D3->3)
+                        let line: u8 = pin.signal.strip_prefix("D")
+                            .and_then(|s| s.parse().ok())
+                            .unwrap_or(0);
+                        g.extend(quote! {
+                            impl_pdm_data_pin!(#peri, #pin_name, #alt, #line);
+                        });
+                    }
                 }
 
                 // SPI is special, CS pins are numbered
@@ -457,17 +480,7 @@ fn main() {
                     }
                 }
 
-                // PDM D0-D3 data pins have line indices
-                // Note: pinmux.rs normalizes D[0] -> D0
-                if regs.kind == "pdm" && pin.signal.starts_with('D') && pin.signal.len() == 2 {
-                    let peri = format_ident!("{}", p.name);
-                    let pin_name = format_ident!("{}", pin.pin);
-                    let alt = pin.alt.unwrap_or(0);
-                    let line: u8 = pin.signal[1..].parse().unwrap_or(0);
-                    g.extend(quote! {
-                        impl_pdm_data_pin!(#peri, #pin_name, #alt, #line);
-                    });
-                }
+                // PDM D0-D3 data pins are handled above with deduplication
 
                 // if regs.kind == "dac"
             }

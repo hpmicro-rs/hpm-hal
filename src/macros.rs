@@ -104,6 +104,26 @@ macro_rules! spi_cs_pin_trait_impl {
     };
 }
 
+// PDM data pin trait impl - needs line index
+macro_rules! impl_pdm_data_pin {
+    ($peri:ident, $pin:ident, $alt:expr, $line:expr) => {
+        impl crate::pdm::DPin<crate::peripherals::$peri> for crate::peripherals::$pin {
+            fn alt_num(&self) -> u8 {
+                $alt
+            }
+            fn line(&self) -> crate::pdm::DataLine {
+                match $line {
+                    0 => crate::pdm::DataLine::Line0,
+                    1 => crate::pdm::DataLine::Line1,
+                    2 => crate::pdm::DataLine::Line2,
+                    3 => crate::pdm::DataLine::Line3,
+                    _ => crate::pdm::DataLine::Line0, // Default fallback
+                }
+            }
+        }
+    };
+}
+
 // ==========
 // DMA
 
