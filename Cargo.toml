@@ -16,7 +16,7 @@ license = "MIT/Apache-2.0"
 # local-development
 # hpm-metapac = { path = "../hpm-data/build/hpm-metapac" }
 # git snapshot
-hpm-metapac = { git = "https://github.com/hpmicro-rs/hpm-metapac.git", tag = "hpm-data-723610170782471bf13bede93034df6dcc56164f" }
+hpm-metapac = { git = "https://github.com/hpmicro-rs/hpm-metapac.git", tag = "hpm-data-e46f77b0d4b89ac675d4f0740a1ff1be63b86584" }
 
 # hpm-riscv-rt = { path = "../hpm-riscv-rt", optional = true }
 hpm-riscv-rt = { version = "0.3.0", optional = true }
@@ -53,7 +53,7 @@ rand_core = "0.9.3"
 
 [build-dependencies]
 # hpm-metapac = { path = "../hpm-data/build/hpm-metapac", default-features = false, features = ["metadata"] }
-hpm-metapac = { git = "https://github.com/hpmicro-rs/hpm-metapac.git", tag = "hpm-data-723610170782471bf13bede93034df6dcc56164f", default-features = false, features = ["metadata"] }
+hpm-metapac = { git = "https://github.com/hpmicro-rs/hpm-metapac.git", tag = "hpm-data-e46f77b0d4b89ac675d4f0740a1ff1be63b86584", default-features = false, features = ["metadata"] }
 
 proc-macro2 = "1.0.92"
 quote = "1.0.37"
