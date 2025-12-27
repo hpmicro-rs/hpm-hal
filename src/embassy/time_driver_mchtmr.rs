@@ -46,10 +46,7 @@ embassy_time_driver::time_driver_impl!(static DRIVER: MachineTimerDriver = Machi
 
 impl MachineTimerDriver {
     fn init(&'static self) {
-        // FIXME: The name in SDK is MCHTMR0
-        #[cfg(hpm67)]
-        let regs = SYSCTL.clock(pac::clocks::MCHTMR0).read();
-        #[cfg(not(hpm67))]
+        // MCT0 = Machine Timer 0 (core 0), MCT1 = core 1
         let regs = SYSCTL.clock(pac::clocks::MCT0).read();
 
         let mchtmr_cfg = ClockConfig {
