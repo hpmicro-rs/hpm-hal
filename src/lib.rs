@@ -89,6 +89,10 @@ pub mod trgm;
 #[cfg(ewdg)]
 pub mod ewdg;
 
+// CRC (Cyclic Redundancy Check)
+#[cfg(crc)]
+pub mod crc;
+
 #[cfg(feature = "rt")]
 pub use hpm_riscv_rt::{entry, external_interrupt, fast, pre_init};
 
