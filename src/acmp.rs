@@ -164,12 +164,12 @@ impl Config {
 ///
 /// Each channel can be configured independently and used concurrently
 /// with other channels.
-pub struct AcmpChannel<'d> {
-    _phantom: PhantomData<&'d ()>,
+pub struct AcmpChannel<'d, T: Instance> {
+    _phantom: PhantomData<&'d T>,
     index: u8,
 }
 
-impl<'d> AcmpChannel<'d> {
+impl<'d, T: Instance> AcmpChannel<'d, T> {
     fn new(index: u8) -> Self {
         Self {
             _phantom: PhantomData,
@@ -179,7 +179,7 @@ impl<'d> AcmpChannel<'d> {
 
     #[inline]
     fn regs(&self) -> pac::acmp::Channel {
-        pac::ACMP.channel(self.index as usize)
+        T::regs().channel(self.index as usize)
     }
 
     /// Configure this channel with the given settings.
@@ -341,18 +341,18 @@ impl<'d> AcmpChannel<'d> {
 
 /// All ACMP channels for 2-channel variants, obtained from [`Acmp::split`].
 #[cfg(any(hpm53, hpm5e))]
-pub struct AcmpChannels<'d> {
-    pub ch0: AcmpChannel<'d>,
-    pub ch1: AcmpChannel<'d>,
+pub struct AcmpChannels<'d, T: Instance> {
+    pub ch0: AcmpChannel<'d, T>,
+    pub ch1: AcmpChannel<'d, T>,
 }
 
 /// All ACMP channels for 4-channel variants, obtained from [`Acmp::split`].
 #[cfg(any(hpm62, hpm63, hpm67, hpm68, hpm6e))]
-pub struct AcmpChannels<'d> {
-    pub ch0: AcmpChannel<'d>,
-    pub ch1: AcmpChannel<'d>,
-    pub ch2: AcmpChannel<'d>,
-    pub ch3: AcmpChannel<'d>,
+pub struct AcmpChannels<'d, T: Instance> {
+    pub ch0: AcmpChannel<'d, T>,
+    pub ch1: AcmpChannel<'d, T>,
+    pub ch2: AcmpChannel<'d, T>,
+    pub ch3: AcmpChannel<'d, T>,
 }
 
 /// Channel count for this chip variant.
@@ -386,7 +386,7 @@ impl<'d, T: Instance> Acmp<'d, T> {
     ///
     /// Each channel can be passed to a different async task and used independently.
     #[cfg(any(hpm53, hpm5e))]
-    pub fn split(self) -> AcmpChannels<'d> {
+    pub fn split(self) -> AcmpChannels<'d, T> {
         AcmpChannels {
             ch0: AcmpChannel::new(0),
             ch1: AcmpChannel::new(1),
@@ -397,7 +397,7 @@ impl<'d, T: Instance> Acmp<'d, T> {
     ///
     /// Each channel can be passed to a different async task and used independently.
     #[cfg(any(hpm62, hpm63, hpm67, hpm68, hpm6e))]
-    pub fn split(self) -> AcmpChannels<'d> {
+    pub fn split(self) -> AcmpChannels<'d, T> {
         AcmpChannels {
             ch0: AcmpChannel::new(0),
             ch1: AcmpChannel::new(1),
@@ -414,7 +414,7 @@ impl<'d, T: Instance> Acmp<'d, T> {
     /// # Panics
     ///
     /// Panics if `index >= CHANNEL_COUNT`.
-    pub fn channel(&mut self, index: u8) -> AcmpChannel<'_> {
+    pub fn channel(&mut self, index: u8) -> AcmpChannel<'_, T> {
         assert!(
             index < CHANNEL_COUNT as u8,
             "ACMP channel index out of range"
