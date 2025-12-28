@@ -207,3 +207,34 @@ macro_rules! impl_i2s_rxd_pin {
         }
     };
 }
+
+// ==========
+// ACMP
+
+// ACMP positive input pin trait impl - needs channel and input index
+macro_rules! impl_acmp_inp_pin {
+    ($peri:ident, $pin:ident, $ch:expr, $input:expr) => {
+        impl crate::acmp::PositivePin<crate::peripherals::$peri> for crate::peripherals::$pin {
+            fn channel(&self) -> u8 {
+                $ch
+            }
+            fn input(&self) -> u8 {
+                $input
+            }
+        }
+    };
+}
+
+// ACMP negative input pin trait impl - needs channel and input index
+macro_rules! impl_acmp_inn_pin {
+    ($peri:ident, $pin:ident, $ch:expr, $input:expr) => {
+        impl crate::acmp::NegativePin<crate::peripherals::$peri> for crate::peripherals::$pin {
+            fn channel(&self) -> u8 {
+                $ch
+            }
+            fn input(&self) -> u8 {
+                $input
+            }
+        }
+    };
+}

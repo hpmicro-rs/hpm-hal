@@ -380,6 +380,9 @@ fn main() {
 
     // Track already generated PDM data pins to avoid duplicates
     let mut pdm_data_pins_generated: HashSet<String> = HashSet::new();
+    // Track already generated ACMP pins to avoid duplicates (same pin can be used by multiple channels)
+    let mut acmp_inp_pins_generated: HashSet<String> = HashSet::new();
+    let mut acmp_inn_pins_generated: HashSet<String> = HashSet::new();
 
     for p in METADATA.peripherals {
         if let Some(regs) = &p.registers {
@@ -481,6 +484,42 @@ fn main() {
                 }
 
                 // PDM D0-D3 data pins are handled above with deduplication
+
+                // ACMP INP/INN pins are special - they have channel and input index
+                // Signal format: CMP{ch}_INP{input} or CMP{ch}_INN{input}
+                // Same pin may be used for multiple channels, so deduplicate by pin name
+                if regs.kind == "acmp" {
+                    let peri = format_ident!("{}", p.name);
+                    let pin_name = format_ident!("{}", pin.pin);
+
+                    // Parse CMP{ch}_INP{input} or CMP{ch}_INN{input}
+                    if let Some(rest) = pin.signal.strip_prefix("CMP") {
+                        if let Some((ch_str, rest)) = rest.split_once('_') {
+                            let ch: u8 = ch_str.parse().unwrap_or(0);
+                            if let Some(input_str) = rest.strip_prefix("INP") {
+                                let input: u8 = input_str.parse().unwrap_or(0);
+                                // Deduplicate by pin name (first channel wins)
+                                let key = pin.pin.to_string();
+                                if !acmp_inp_pins_generated.contains(&key) {
+                                    acmp_inp_pins_generated.insert(key);
+                                    g.extend(quote! {
+                                        impl_acmp_inp_pin!(#peri, #pin_name, #ch, #input);
+                                    });
+                                }
+                            } else if let Some(input_str) = rest.strip_prefix("INN") {
+                                let input: u8 = input_str.parse().unwrap_or(0);
+                                // Deduplicate by pin name (first channel wins)
+                                let key = pin.pin.to_string();
+                                if !acmp_inn_pins_generated.contains(&key) {
+                                    acmp_inn_pins_generated.insert(key);
+                                    g.extend(quote! {
+                                        impl_acmp_inn_pin!(#peri, #pin_name, #ch, #input);
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
 
                 // if regs.kind == "dac"
             }
