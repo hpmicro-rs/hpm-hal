@@ -72,6 +72,8 @@ pub mod acmp;
 pub mod adc;
 #[cfg(dac)]
 pub mod dac;
+#[cfg(tsns)]
+pub mod tsns;
 
 // timer peripherals
 #[cfg(tmr)]
