@@ -66,6 +66,8 @@ pub mod pdm;
 pub mod rtc;
 
 // analog peripherals
+#[cfg(acmp)]
+pub mod acmp;
 #[cfg(adc16)]
 pub mod adc;
 #[cfg(dac)]

@@ -86,6 +86,12 @@ This crate is a working-in-progress and not ready for production use.
   - [ ] Host
 - [x] XPI NOR flash driver using embedded-storage
 - [x] RNG, in blocking mode
+- [x] CRC, with split pattern for multi-channel support
+- [x] ACMP (Analog Comparator)
+  - [x] Split pattern for async task distribution
+  - [x] Internal 8-bit DAC support
+  - [x] Configurable hysteresis and filtering
+  - [x] Edge detection (rising/falling)
 - [ ] power domain handling
 
 ### Related Crates
