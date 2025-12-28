@@ -92,6 +92,9 @@ This crate is a working-in-progress and not ready for production use.
   - [x] Internal 8-bit DAC support
   - [x] Configurable hysteresis and filtering
   - [x] Edge detection (rising/falling)
+- [x] TSNS (Temperature Sensor)
+  - [x] Continuous mode measurement
+  - [x] Automatic min/max tracking
 - [ ] power domain handling
 
 ### Related Crates
