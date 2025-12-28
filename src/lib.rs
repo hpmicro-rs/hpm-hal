@@ -80,7 +80,7 @@ pub mod tsns;
 pub mod timer;
 
 // motor control peripherals
-#[cfg(pwm)]
+#[cfg(any(pwm, pwmv2))]
 pub mod pwm;
 #[cfg(qei)]
 pub mod qei;

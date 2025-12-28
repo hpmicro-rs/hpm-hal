@@ -16,7 +16,7 @@ This crate is a working-in-progress and not ready for production use.
 | HPM6200    | Y   | Y    | Y       | Y      | Y+   |      |     |     |     | ?   | ?   |     | Y   |     |     |
 | HPM5300    | Y   | Y    | Y       | Y      | Y+   | Y+   | Y+  | Y+  | Y+  | Y   | ?   | Y   | Y   | Y   | Y   |
 | HPM6800    | Y   |      |         |        |      |      |     |     |     | ?   | ?   |     | Y   |     |     |
-| HPM6E00    | Y   | Y    | Y       | Y      | Y+   | Y+   | Y+  | Y+  | Y+  | ?   | !   |     | Y   | Y   | Y   |
+| HPM6E00    | Y   | Y    | Y       | Y      | Y+   | Y+   | Y+  | Y+  | Y+  | ?   | ?   |     | Y   | Y   | Y   |
 
 - Y: Implemented
 - ?: Requires demo verification
@@ -57,7 +57,11 @@ This crate is a working-in-progress and not ready for production use.
   - [x] Multi-channel support
   - [ ] ComplementaryPwm with dead-time
   - [ ] InputCapture
-  - [ ] PWMV2 (v6e, HPM6E00/5E00)
+- [x] PWMV2 driver (v6e, HPM6E00 series)
+  - [x] SimplePwmV2 with API compatible to SimplePwm
+  - [x] Fractional duty cycle for 100ps resolution
+  - [x] 4 independent counters
+  - [ ] ComplementaryPwmV2
 - [x] ADC driver
   - [x] ADC16
     - blocking one-shot

@@ -358,7 +358,7 @@ fn main() {
         (("femc", "DQ31"), quote!(crate::femc::DQ31Pin)),
         (("femc", "RAS"), quote!(crate::femc::RASPin)),
         (("femc", "WE"), quote!(crate::femc::WEPin)),
-        // PWM - 8 output channels + fault inputs
+        // PWM - 8 output channels + fault inputs (classic PWM)
         (("pwm", "P0"), quote!(crate::pwm::Ch0Pin)),
         (("pwm", "P1"), quote!(crate::pwm::Ch1Pin)),
         (("pwm", "P2"), quote!(crate::pwm::Ch2Pin)),
@@ -369,6 +369,17 @@ fn main() {
         (("pwm", "P7"), quote!(crate::pwm::Ch7Pin)),
         (("pwm", "FAULT0"), quote!(crate::pwm::Fault0Pin)),
         (("pwm", "FAULT1"), quote!(crate::pwm::Fault1Pin)),
+        // PWMV2 - 8 output channels + fault inputs (HPM6E00 series)
+        (("pwmv2", "P0"), quote!(crate::pwm::Ch0Pin)),
+        (("pwmv2", "P1"), quote!(crate::pwm::Ch1Pin)),
+        (("pwmv2", "P2"), quote!(crate::pwm::Ch2Pin)),
+        (("pwmv2", "P3"), quote!(crate::pwm::Ch3Pin)),
+        (("pwmv2", "P4"), quote!(crate::pwm::Ch4Pin)),
+        (("pwmv2", "P5"), quote!(crate::pwm::Ch5Pin)),
+        (("pwmv2", "P6"), quote!(crate::pwm::Ch6Pin)),
+        (("pwmv2", "P7"), quote!(crate::pwm::Ch7Pin)),
+        (("pwmv2", "FAULT0"), quote!(crate::pwm::Fault0Pin)),
+        (("pwmv2", "FAULT1"), quote!(crate::pwm::Fault1Pin)),
         // I2S
         (("i2s", "MCLK"), quote!(crate::i2s::MclkPin)),
         (("i2s", "BCLK"), quote!(crate::i2s::BclkPin)),
