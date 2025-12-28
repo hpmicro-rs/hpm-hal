@@ -47,6 +47,7 @@ use embassy_hal_internal::Peri;
 
 use super::{Ch0Pin, Ch1Pin, Ch2Pin, Ch3Pin, Ch4Pin, Ch5Pin, Ch6Pin, Ch7Pin};
 use super::{Channel, Polarity};
+use crate::gpio::Pin;
 use crate::pac;
 use crate::pac::pwmv2::vals;
 use crate::time::Hertz;
@@ -54,6 +55,17 @@ use crate::time::Hertz;
 
 /// Write protection unlock key for PWMV2
 const UNLOCK_KEY: u32 = 0xB0382607;
+
+/// Configure a pin for PWM output
+///
+/// This enables the output buffer and sets the PWM alt function.
+#[inline]
+fn configure_pin_for_pwm<P: Pin>(pin: &Peri<'_, P>, alt_num: u8) {
+    // Enable output buffer (required for PWM signal to reach the pin)
+    pin.set_as_output();
+    // Set the alt function to PWM
+    pin.set_as_alt(alt_num);
+}
 
 // =============================================================================
 // Configuration
@@ -298,49 +310,49 @@ impl<'d, T: Instance> SimplePwmV2<'d, T> {
 
     /// Configure and enable channel 0.
     pub fn enable_ch0(&mut self, pin: Peri<'d, impl Ch0Pin<T>>) {
-        pin.set_as_alt(pin.alt_num());
+        configure_pin_for_pwm(&pin, pin.alt_num());
         self.configure_channel(Channel::Ch0);
     }
 
     /// Configure and enable channel 1.
     pub fn enable_ch1(&mut self, pin: Peri<'d, impl Ch1Pin<T>>) {
-        pin.set_as_alt(pin.alt_num());
+        configure_pin_for_pwm(&pin, pin.alt_num());
         self.configure_channel(Channel::Ch1);
     }
 
     /// Configure and enable channel 2.
     pub fn enable_ch2(&mut self, pin: Peri<'d, impl Ch2Pin<T>>) {
-        pin.set_as_alt(pin.alt_num());
+        configure_pin_for_pwm(&pin, pin.alt_num());
         self.configure_channel(Channel::Ch2);
     }
 
     /// Configure and enable channel 3.
     pub fn enable_ch3(&mut self, pin: Peri<'d, impl Ch3Pin<T>>) {
-        pin.set_as_alt(pin.alt_num());
+        configure_pin_for_pwm(&pin, pin.alt_num());
         self.configure_channel(Channel::Ch3);
     }
 
     /// Configure and enable channel 4.
     pub fn enable_ch4(&mut self, pin: Peri<'d, impl Ch4Pin<T>>) {
-        pin.set_as_alt(pin.alt_num());
+        configure_pin_for_pwm(&pin, pin.alt_num());
         self.configure_channel(Channel::Ch4);
     }
 
     /// Configure and enable channel 5.
     pub fn enable_ch5(&mut self, pin: Peri<'d, impl Ch5Pin<T>>) {
-        pin.set_as_alt(pin.alt_num());
+        configure_pin_for_pwm(&pin, pin.alt_num());
         self.configure_channel(Channel::Ch5);
     }
 
     /// Configure and enable channel 6.
     pub fn enable_ch6(&mut self, pin: Peri<'d, impl Ch6Pin<T>>) {
-        pin.set_as_alt(pin.alt_num());
+        configure_pin_for_pwm(&pin, pin.alt_num());
         self.configure_channel(Channel::Ch6);
     }
 
     /// Configure and enable channel 7.
     pub fn enable_ch7(&mut self, pin: Peri<'d, impl Ch7Pin<T>>) {
-        pin.set_as_alt(pin.alt_num());
+        configure_pin_for_pwm(&pin, pin.alt_num());
         self.configure_channel(Channel::Ch7);
     }
 
