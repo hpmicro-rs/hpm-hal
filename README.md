@@ -11,11 +11,11 @@ This crate is a working-in-progress and not ready for production use.
 
 | MCU Family | PAC | Demo | Embassy | SYSCTL | GPIO | UART | I2C | SPI | DMA | TMR | PWM | ADC | WDG | USB | CAN |
 | ---------- | --- | ---- | ------- | ------ | ---- | ---- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| HPM6700    | Y   | Y    | Y       | Y      | Y+   | Y+   | Y+  | Y+  | Y+  | ?   | Y   |     |     |     |     |
-| HPM6300    | Y   | Y    | Y       | Y      | Y+   | ?    | ?   | ?   | ?   | ?   | ?   |     |     |     |     |
-| HPM6200    | Y   | Y    | Y       | Y      | Y+   |      |     |     |     | ?   | ?   |     |     |     |     |
+| HPM6700    | Y   | Y    | Y       | Y      | Y+   | Y+   | Y+  | Y+  | Y+  | ?   | Y   |     | Y   |     |     |
+| HPM6300    | Y   | Y    | Y       | Y      | Y+   | ?    | ?   | ?   | ?   | ?   | ?   |     | Y   |     |     |
+| HPM6200    | Y   | Y    | Y       | Y      | Y+   |      |     |     |     | ?   | ?   |     | Y   |     |     |
 | HPM5300    | Y   | Y    | Y       | Y      | Y+   | Y+   | Y+  | Y+  | Y+  | Y   | ?   | Y   | Y   | Y   | Y   |
-| HPM6800    | Y   |      |         |        |      |      |     |     |     | ?   | ?   |     |     |     |     |
+| HPM6800    | Y   |      |         |        |      |      |     |     |     | ?   | ?   |     | Y   |     |     |
 | HPM6E00    | Y   | Y    | Y       | Y      | Y+   | Y+   | Y+  | Y+  | Y+  | ?   | !   |     | Y   | Y   | Y   |
 
 - Y: Implemented
@@ -95,6 +95,10 @@ This crate is a working-in-progress and not ready for production use.
 - [x] TSNS (Temperature Sensor)
   - [x] Continuous mode measurement
   - [x] Automatic min/max tracking
+- [x] WDG/EWDG (Watchdog)
+  - [x] EWDG for HPM5300/6800/6E00 (Enhanced Watchdog)
+  - [x] WDG for HPM6200/6300/6700 (Simple Watchdog)
+  - [x] Configurable timeout with Duration API
 - [ ] power domain handling
 
 ### Related Crates
