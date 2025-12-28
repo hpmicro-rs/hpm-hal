@@ -93,6 +93,10 @@ pub mod trgm;
 #[cfg(ewdg)]
 pub mod ewdg;
 
+// WDG (Simple Watchdog) - v67 for HPM6200/6300/6700 series
+#[cfg(wdg)]
+pub mod wdg;
+
 // CRC (Cyclic Redundancy Check)
 #[cfg(crc)]
 pub mod crc;
