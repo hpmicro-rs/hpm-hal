@@ -5,10 +5,10 @@
 //! - Shows multi-channel PWM setup across PWM0 and PWM1
 //! - Demonstrates color wheel animation using HSL to RGB conversion
 //!
-//! Pin mapping (connect LEDs to these pins):
-//! - PB04: PWM0_P_4 (Red LED)
-//! - PB05: PWM0_P_5 (Green LED)
-//! - PB06: PWM0_P_6 (Blue LED)
+//! Pin mapping (HPM6E00EVK board LEDs):
+//! - PE14: PWM1_P_6 (Red LED)
+//! - PE15: PWM1_P_7 (Green LED)
+//! - PE04: PWM0_P_4 (Blue LED)
 
 #![no_main]
 #![no_std]
@@ -36,14 +36,21 @@ async fn main(_spawner: Spawner) -> ! {
         ..Default::default()
     };
 
-    // Create PWM instance with channels enabled - all on PWM0
-    // Red: PB04 (channel 4), Green: PB05 (channel 5), Blue: PB06 (channel 6)
-    let mut pwm = SimplePwmV2::new(p.PWM0, config);
-    pwm.enable_ch4(p.PB04);
-    pwm.enable_ch5(p.PB05);
-    pwm.enable_ch6(p.PB06);
+    // HPM6E00EVK board LED connections:
+    // - Red LED on PE14 (PWM1 channel 6)
+    // - Green LED on PE15 (PWM1 channel 7)
+    // - Blue LED on PE04 (PWM0 channel 4)
 
-    let max_duty = pwm.max_duty();
+    // PWM0 for blue LED
+    let mut pwm0 = SimplePwmV2::new(p.PWM0, config.clone());
+    pwm0.enable_ch4(p.PE04);
+
+    // PWM1 for red and green LEDs
+    let mut pwm1 = SimplePwmV2::new(p.PWM1, config);
+    pwm1.enable_ch6(p.PE14);
+    pwm1.enable_ch7(p.PE15);
+
+    let max_duty = pwm0.max_duty();
     info!("Max duty: {}", max_duty);
 
     // Color wheel animation
@@ -61,9 +68,11 @@ async fn main(_spawner: Spawner) -> ! {
             let raw_b = min_duty + duty_range * (255 - b as u32) / 255;
 
             // Set duty cycles
-            pwm.set_duty(Channel::Ch4, raw_r);
-            pwm.set_duty(Channel::Ch5, raw_g);
-            pwm.set_duty(Channel::Ch6, raw_b);
+            // Red and Green on PWM1 (channels 6, 7)
+            pwm1.set_duty(Channel::Ch6, raw_r);
+            pwm1.set_duty(Channel::Ch7, raw_g);
+            // Blue on PWM0 (channel 4)
+            pwm0.set_duty(Channel::Ch4, raw_b);
 
             Timer::after_millis(5).await;
         }
