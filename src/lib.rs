@@ -101,6 +101,11 @@ pub mod wdg;
 #[cfg(crc)]
 pub mod crc;
 
+// SDXC (SD/MMC Card Interface)
+// Temporarily disabled during initial development
+// #[cfg(sdxc)]
+// pub mod sdxc;
+
 #[cfg(feature = "rt")]
 pub use hpm_riscv_rt::{entry, external_interrupt, fast, pre_init};
 
