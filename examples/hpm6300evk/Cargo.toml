@@ -15,6 +15,13 @@ embedded-hal = "1.0.0"
 riscv = { version = "0.15.0", features = ["critical-section-single-hart"] }
 andes-riscv = "0.1.1"
 
+embassy-time = { version = "0.5.0", features = ["tick-hz-1_000_000"] }
+embassy-executor = { version = "0.9.1", features = [
+    "nightly",
+    "arch-riscv32",
+    "executor-thread",
+] }
+
 [profile.release]
 strip = false   # symbols are not flashed to the microcontroller, so don't strip them.
 lto = true

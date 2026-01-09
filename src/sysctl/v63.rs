@@ -117,6 +117,9 @@ impl ClockConfig {
 }
 
 pub(crate) unsafe fn init(config: Config) {
+    // Bump up DCDC voltage to 1100mv for stable operation at higher frequencies
+    pac::PCFG.dcdc_mode().modify(|w| w.set_volt(1100));
+
     if SYSCTL.clock_cpu(0).read().mux() == ClockMux::CLK_24M {
         // TODO, enable XTAL
         // SYSCTL.global00().modify(|w| w.set_mux(0b11));
