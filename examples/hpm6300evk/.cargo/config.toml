@@ -17,8 +17,8 @@ runner = [
 ]
 
 rustflags = [
-    "-C",
-    "target-feature=+d,+zfh,+zba,+zbb,+zbc,+zbs",
+    # "-C",
+    # "target-feature=+d,+zfh,+zba,+zbb,+zbc,+zbs",
     # Linker scripts:
     "-C",
     "link-arg=-Tmemory.x",
