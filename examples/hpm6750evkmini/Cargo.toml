@@ -18,7 +18,10 @@ hpm-hal = { path = "../..", features = [
     "chrono",
     "time",
     "defmt",
+    "embedded-sdmmc",
 ], default-features = false }
+
+embedded-sdmmc = "0.9"
 
 embedded-hal = "1.0.0"
 
