@@ -2,6 +2,26 @@
 //!
 //! Embassy-style driver for SD cards on HPMicro MCUs.
 //!
+//! # Current Status
+//!
+//! - ✅ Blocking single-block read/write (SDMA mode, errata E00033 workaround)
+//! - ✅ FAT32 filesystem via embedded-sdmmc BlockDevice trait
+//! - ⚠️ Multi-block read/write: uses single-block loop (PIO mode broken)
+//!
+//! # TODO (Phase 2/3)
+//!
+//! - [ ] ADMA2 support for efficient multi-block transfers
+//! - [ ] Async mode with interrupt-driven transfers
+//! - [ ] High speed modes (SDR50, SDR104) with 1.8V signaling
+//! - [ ] Fix CSD v2.0 parsing for SDHC capacity display
+//!
+//! See `PHASE2_PLAN.md` for implementation details.
+//!
+//! # Hardware Note
+//!
+//! Due to errata E00033, PIO/FIFO mode is unreliable. This driver uses
+//! SDMA for all data transfers.
+//!
 //! # Examples
 //!
 //! ## Blocking mode
@@ -129,28 +149,17 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
 
         let status = regs.int_stat().read();
 
-        // Save error status
+        // Save error status for async functions to check
         if status.0 & 0xFFFF_8000 != 0 {
             state.set_error(status.0);
         }
 
-        // Clear interrupt flags
-        regs.int_stat().write(|w| w.0 = status.0);
+        // Disable interrupt signals to prevent re-triggering
+        // The async function will re-enable if needed after checking status
+        // DO NOT clear int_stat here - let the async function read it first
+        regs.int_signal_en().write(|_| {});
 
-        // Disable interrupts that have fired
-        regs.int_stat_en().modify(|w| {
-            if status.cmd_complete() {
-                w.set_cmd_complete_stat_en(false);
-            }
-            if status.xfer_complete() {
-                w.set_xfer_complete_stat_en(false);
-            }
-            if status.dma_interrupt() {
-                w.set_dma_interrupt_stat_en(false);
-            }
-        });
-
-        // Wake waiting task
+        // Wake waiting task - it will read int_stat and clear it
         state.wake();
     }
 }
@@ -329,6 +338,31 @@ impl<'d, M: Mode> Sdxc<'d, M> {
         while regs.misc_ctrl1().read().card_active() {}
     }
 
+    /// Wait for card to be ready (not in programming state)
+    ///
+    /// Uses CMD13 (SEND_STATUS) to check card state.
+    fn wait_card_ready(&self) -> Result<(), Error> {
+        let rca = self.card.as_ref().ok_or(Error::NoCard)?.rca;
+
+        for _ in 0..10000 {
+            // CMD13: SEND_STATUS
+            self.cmd(types::common_cmd::card_status(rca, false), false)?;
+            let status = types::CardStatus::<types::SD>::from(self.get_response());
+
+            // Check if card is ready (not in programming state)
+            if status.ready_for_data() {
+                return Ok(());
+            }
+
+            // Small delay
+            for _ in 0..1000 {
+                core::hint::spin_loop();
+            }
+        }
+
+        Err(Error::SoftwareTimeout)
+    }
+
     /// Send a command and wait for response (blocking)
     fn cmd<R: Resp>(&self, cmd: Cmd<R>, data: bool) -> Result<(), Error> {
         let regs = self.info.regs;
@@ -415,7 +449,7 @@ impl<'d, M: Mode> Sdxc<'d, M> {
         }
     }
 
-    /// Send a data read command with DMA enabled (blocking)
+    /// Send a data read command with DMA enabled (blocking) - for single block SDMA
     fn cmd_dma<R: Resp>(&self, cmd: Cmd<R>) -> Result<(), Error> {
         let regs = self.info.regs;
 
@@ -473,7 +507,7 @@ impl<'d, M: Mode> Sdxc<'d, M> {
         }
     }
 
-    /// Send a data write command with DMA enabled (blocking)
+    /// Send a data write command with DMA enabled (blocking) - for single block SDMA
     fn cmd_dma_write<R: Resp>(&self, cmd: Cmd<R>) -> Result<(), Error> {
         let regs = self.info.regs;
 
@@ -531,19 +565,145 @@ impl<'d, M: Mode> Sdxc<'d, M> {
         }
     }
 
+    /// Send a multi-block data read command with ADMA2 enabled (blocking)
+    fn cmd_adma2_multi_read<R: Resp>(&self, cmd: Cmd<R>) -> Result<(), Error> {
+        let regs = self.info.regs;
+
+        // Wait for CMD and DAT lines to be free
+        while regs.pstate().read().cmd_inhibit() {}
+        while regs.pstate().read().dat_inhibit() {}
+
+        // Set command argument
+        regs.cmd_arg().write(|w| w.0 = cmd.arg);
+
+        // Build CMD_XFER with DMA enabled for multi-block
+        let resp_len = cmd.response_len();
+        let resp_type_sel = get_resp_type_select(resp_len);
+
+        regs.cmd_xfer().write(|w| {
+            w.set_cmd_index(cmd.cmd);
+            w.set_resp_type_select(resp_type_sel);
+            w.set_cmd_crc_chk_enable(true);
+            w.set_cmd_idx_chk_enable(true);
+            w.set_data_present_sel(true);
+            w.set_data_xfer_dir(true); // Read
+            w.set_dma_enable(true);
+            w.set_multi_blk_sel(true);        // Multi-block transfer
+            w.set_block_count_enable(true);   // Enable block count (per HPM SDK)
+            w.set_auto_cmd_enable(1);         // Auto CMD12 after transfer
+        });
+
+        // Wait for command complete
+        let mut timeout_count = 0u32;
+        loop {
+            let status = regs.int_stat().read();
+
+            if status.cmd_complete() {
+                regs.int_stat().write(|w| w.set_cmd_complete(true));
+                return Ok(());
+            }
+
+            if status.cmd_tout_err() {
+                return Err(Error::Timeout);
+            }
+            if status.cmd_crc_err() {
+                return Err(Error::Crc);
+            }
+            if status.cmd_end_bit_err() {
+                return Err(Error::CmdEndBit);
+            }
+            if status.cmd_idx_err() {
+                return Err(Error::CmdIndex);
+            }
+
+            timeout_count += 1;
+            if timeout_count > 10_000_000 {
+                return Err(Error::SoftwareTimeout);
+            }
+        }
+    }
+
+    /// Send a multi-block data write command with ADMA2 enabled (blocking)
+    fn cmd_adma2_multi_write<R: Resp>(&self, cmd: Cmd<R>) -> Result<(), Error> {
+        let regs = self.info.regs;
+
+        // Wait for CMD and DAT lines to be free
+        while regs.pstate().read().cmd_inhibit() {}
+        while regs.pstate().read().dat_inhibit() {}
+
+        // Set command argument
+        regs.cmd_arg().write(|w| w.0 = cmd.arg);
+
+        // Build CMD_XFER with DMA enabled for multi-block
+        let resp_len = cmd.response_len();
+        let resp_type_sel = get_resp_type_select(resp_len);
+
+        regs.cmd_xfer().write(|w| {
+            w.set_cmd_index(cmd.cmd);
+            w.set_resp_type_select(resp_type_sel);
+            w.set_cmd_crc_chk_enable(true);
+            w.set_cmd_idx_chk_enable(true);
+            w.set_data_present_sel(true);
+            w.set_data_xfer_dir(false); // Write
+            w.set_dma_enable(true);
+            w.set_multi_blk_sel(true);        // Multi-block transfer
+            w.set_block_count_enable(true);   // Enable block count (per HPM SDK)
+            w.set_auto_cmd_enable(1);         // Auto CMD12 after transfer
+        });
+
+        // Wait for command complete
+        let mut timeout_count = 0u32;
+        loop {
+            let status = regs.int_stat().read();
+
+            if status.cmd_complete() {
+                regs.int_stat().write(|w| w.set_cmd_complete(true));
+                return Ok(());
+            }
+
+            if status.cmd_tout_err() {
+                return Err(Error::Timeout);
+            }
+            if status.cmd_crc_err() {
+                return Err(Error::Crc);
+            }
+            if status.cmd_end_bit_err() {
+                return Err(Error::CmdEndBit);
+            }
+            if status.cmd_idx_err() {
+                return Err(Error::CmdIndex);
+            }
+
+            timeout_count += 1;
+            if timeout_count > 10_000_000 {
+                return Err(Error::SoftwareTimeout);
+            }
+        }
+    }
+
     /// Get 48-bit response
     fn get_response(&self) -> u32 {
         self.info.regs.resp(0).read().0
     }
 
-    /// Get 136-bit response
+    /// Get 136-bit response (R2)
+    ///
+    /// Note: The SD Host Controller stores R2 response right-shifted by 8 bits
+    /// (CRC7 + end bit removed). We shift left to restore original bit positions
+    /// for sdio-host CID/CSD parsing.
     fn get_response_r2(&self) -> [u32; 4] {
         let regs = self.info.regs;
+        let r0 = regs.resp(0).read().0;
+        let r1 = regs.resp(1).read().0;
+        let r2 = regs.resp(2).read().0;
+        let r3 = regs.resp(3).read().0;
+
+        // Shift left by 8 bits to restore original CID/CSD bit positions
         [
-            regs.resp(0).read().0,
-            regs.resp(1).read().0,
-            regs.resp(2).read().0,
-            regs.resp(3).read().0,
+            r0 << 8,
+            (r1 << 8) | (r0 >> 24),
+            (r2 << 8) | (r1 >> 24),
+            (r3 << 8) | (r2 >> 24),
         ]
     }
 
@@ -566,6 +726,112 @@ impl<'d, M: Mode> Sdxc<'d, M> {
                 }
             }
         });
+    }
+
+    /// Initialize an SD card
+    ///
+    /// This performs the SD card identification and initialization sequence.
+    /// After calling this method, the card is ready for data transfers.
+    pub fn init_sd_card(&mut self, freq: Hertz) -> Result<(), Error> {
+        let regs = self.info.regs;
+
+        // Clear all interrupt status
+        regs.int_stat().write(|w| w.0 = 0xFFFFFFFF);
+
+        // Enable Host Version 4 mode and ADMA2 26-bit length mode (required for ADMA2)
+        regs.ac_host_ctrl().modify(|w| {
+            w.set_host_ver4_enable(true);
+            w.set_adma2_len_mode(true);
+        });
+
+        // Set 400kHz for identification
+        self.set_clock(SD_INIT_FREQ);
+
+        // Send 74+ clock cycles
+        self.wait_card_active();
+
+        // Delay after card activation for connection stability (per C SDK: 100ms)
+        // Using ~10ms which should be sufficient for most cards
+        for _ in 0..500000 {
+            core::hint::spin_loop();
+        }
+
+        // CMD0: GO_IDLE_STATE
+        self.cmd(types::common_cmd::idle(), false)?;
+
+        // CMD8: SEND_IF_COND
+        self.cmd(types::sd_cmd::send_if_cond(1, 0xAA), false)?;
+        let cic = types::CIC::from(self.get_response());
+        if cic.pattern() != 0xAA {
+            return Err(Error::UnsupportedCardVersion);
+        }
+
+        // ACMD41: SD_SEND_OP_COND (repeated until ready)
+        let mut ocr: types::OCR<types::SD>;
+        for _ in 0..1000 {
+            self.cmd(types::common_cmd::app_cmd(0), false)?;
+            match self.cmd(types::sd_cmd::sd_send_op_cond(true, false, false, 0x1FF), false) {
+                Ok(_) | Err(Error::Crc) => {}
+                Err(e) => return Err(e),
+            }
+
+            ocr = self.get_response().into();
+            if !ocr.is_busy() {
+                // Card is ready (bit 31 = 1 means power up complete)
+                let card_type = if ocr.high_capacity() {
+                    types::CardCapacity::HighCapacity
+                } else {
+                    types::CardCapacity::StandardCapacity
+                };
+
+                // CMD2: ALL_SEND_CID
+                self.cmd(types::common_cmd::all_send_cid(), false)?;
+                let cid: types::CID<types::SD> = self.get_response_r2().into();
+
+                // CMD3: SEND_RELATIVE_ADDR
+                self.cmd(types::sd_cmd::send_relative_address(), false)?;
+                let rca = types::RCA::<types::SD>::from(self.get_response()).address();
+
+                // CMD9: SEND_CSD
+                self.cmd(types::common_cmd::send_csd(rca), false)?;
+                let csd: types::CSD<types::SD> = self.get_response_r2().into();
+
+                // CMD7: SELECT_CARD
+                self.cmd(types::common_cmd::select_card(rca), false)?;
+
+                // Store card info
+                self.card = Some(Card {
+                    card_type,
+                    ocr,
+                    rca,
+                    cid,
+                    csd,
+                    scr: types::SCR::default(),
+                });
+
+                // Switch to target frequency
+                self.set_clock(freq);
+
+                // After clock change, send 74+ clocks to re-synchronize card
+                self.wait_card_active();
+
+                // Set 4-bit bus width if available
+                if self._d3.is_some() {
+                    self.cmd(types::common_cmd::app_cmd(rca), false)?;
+                    self.cmd(types::sd_cmd::set_bus_width(true), false)?;
+                    self.set_bus_width(BusWidth::Four);
+                }
+
+                return Ok(());
+            }
+
+            // Small delay between retries
+            for _ in 0..10000 {
+                core::hint::spin_loop();
+            }
+        }
+
+        Err(Error::Timeout)
     }
 }
 
@@ -701,103 +967,6 @@ impl<'d> Sdxc<'d, Blocking> {
         )
     }
 
-    /// Initialize an SD card
-    ///
-    /// This performs the SD card identification and initialization sequence.
-    /// After calling this method, the card is ready for data transfers.
-    pub fn init_sd_card(&mut self, freq: Hertz) -> Result<(), Error> {
-        let regs = self.info.regs;
-
-        // Set 400kHz for identification
-        self.set_clock(SD_INIT_FREQ);
-
-        // Send 74+ clock cycles
-        self.wait_card_active();
-
-        // Delay after card activation for connection stability (per C SDK: 100ms)
-        // Using ~10ms which should be sufficient for most cards
-        for _ in 0..500000 {
-            core::hint::spin_loop();
-        }
-
-        // CMD0: GO_IDLE_STATE
-        self.cmd(types::common_cmd::idle(), false)?;
-
-        // CMD8: SEND_IF_COND
-        self.cmd(types::sd_cmd::send_if_cond(1, 0xAA), false)?;
-        let cic = types::CIC::from(self.get_response());
-        if cic.pattern() != 0xAA {
-            return Err(Error::UnsupportedCardVersion);
-        }
-
-        // ACMD41: SD_SEND_OP_COND (repeated until ready)
-        let mut ocr: types::OCR<types::SD>;
-        for _ in 0..1000 {
-            self.cmd(types::common_cmd::app_cmd(0), false)?;
-            match self.cmd(types::sd_cmd::sd_send_op_cond(true, false, false, 0x1FF), false) {
-                Ok(_) | Err(Error::Crc) => {}
-                Err(e) => return Err(e),
-            }
-
-            ocr = self.get_response().into();
-            if !ocr.is_busy() {
-                // Card is ready (bit 31 = 1 means power up complete)
-                let card_type = if ocr.high_capacity() {
-                    types::CardCapacity::HighCapacity
-                } else {
-                    types::CardCapacity::StandardCapacity
-                };
-
-                // CMD2: ALL_SEND_CID
-                self.cmd(types::common_cmd::all_send_cid(), false)?;
-                let cid: types::CID<types::SD> = self.get_response_r2().into();
-
-                // CMD3: SEND_RELATIVE_ADDR
-                self.cmd(types::sd_cmd::send_relative_address(), false)?;
-                let rca = types::RCA::<types::SD>::from(self.get_response()).address();
-
-                // CMD9: SEND_CSD
-                self.cmd(types::common_cmd::send_csd(rca), false)?;
-                let csd: types::CSD<types::SD> = self.get_response_r2().into();
-
-                // CMD7: SELECT_CARD
-                self.cmd(types::common_cmd::select_card(rca), false)?;
-
-                // Store card info
-                self.card = Some(Card {
-                    card_type,
-                    ocr,
-                    rca,
-                    cid,
-                    csd,
-                    scr: types::SCR::default(),
-                });
-
-                // Switch to target frequency
-                self.set_clock(freq);
-
-                // After clock change, send 74+ clocks to re-synchronize card
-                self.wait_card_active();
-
-                // Set 4-bit bus width if available
-                if self._d3.is_some() {
-                    self.cmd(types::common_cmd::app_cmd(rca), false)?;
-                    self.cmd(types::sd_cmd::set_bus_width(true), false)?;
-                    self.set_bus_width(BusWidth::Four);
-                }
-
-                return Ok(());
-            }
-
-            // Small delay between retries
-            for _ in 0..10000 {
-                core::hint::spin_loop();
-            }
-        }
-
-        Err(Error::Timeout)
-    }
-
     /// Read a single 512-byte block
     ///
     /// Note: Uses SDMA mode due to hardware errata E00033 (PIO mode unreliable).
@@ -850,16 +1019,24 @@ impl<'d> Sdxc<'d, Blocking> {
         Ok(())
     }
 
-    /// Read multiple 512-byte blocks
+    /// Read multiple 512-byte blocks using ADMA2
     ///
-    /// Uses CMD18 (READ_MULTIPLE_BLOCK) followed by CMD12 (STOP_TRANSMISSION).
-    /// This is more efficient than calling `read_block` multiple times.
-    pub fn read_blocks(&mut self, block_idx: u32, buffers: &mut [DataBlock]) -> Result<(), Error> {
+    /// Uses CMD18 (READ_MULTIPLE_BLOCK) with ADMA2 for efficient multi-block transfer.
+    /// The descriptor table must be provided by the caller and placed in DMA-accessible memory.
+    ///
+    /// # Arguments
+    /// - `block_idx`: Starting block index
+    /// - `buffers`: Array of DataBlocks to read into
+    /// - `adma_table`: ADMA2 descriptor table (must have at least `buffers.len()` entries)
+    pub fn read_blocks_adma2<const N: usize>(
+        &mut self,
+        block_idx: u32,
+        buffers: &mut [DataBlock],
+        adma_table: &mut types::Adma2Table<N>,
+    ) -> Result<(), Error> {
         if buffers.is_empty() {
             return Ok(());
         }
-
-        // Use single block read for just one block
         if buffers.len() == 1 {
             return self.read_block(block_idx, &mut buffers[0]);
         }
@@ -876,7 +1053,15 @@ impl<'d> Sdxc<'d, Blocking> {
 
         let block_count = buffers.len() as u16;
 
-        // Configure multi-block transfer
+        // Setup ADMA2 descriptors
+        let desc_count = adma_table.setup_read(buffers);
+
+        #[cfg(feature = "defmt")]
+        defmt::debug!("ADMA2 read: block_idx={}, count={}, desc_count={}", block_idx, block_count, desc_count);
+        #[cfg(feature = "defmt")]
+        defmt::debug!("ADMA2 desc table @ 0x{:08X}", adma_table.as_ptr() as u32);
+
+        // Configure block transfer
         regs.blk_attr().write(|w| {
             w.set_xfer_block_size(512);
             w.set_block_cnt(block_count);
@@ -885,92 +1070,79 @@ impl<'d> Sdxc<'d, Blocking> {
         // Clear status
         regs.int_stat().write(|w| w.0 = 0xFFFFFFFF);
 
+        // Configure ADMA2
+        regs.prot_ctrl().modify(|w| w.set_dma_sel(2)); // ADMA2
+        regs.adma_sys_addr().write(|w| w.0 = adma_table.as_ptr() as u32);
+
+        #[cfg(feature = "defmt")]
+        defmt::debug!("PROT_CTRL: 0x{:08X}", regs.prot_ctrl().read().0);
+
         // CMD16: SET_BLOCKLEN
         self.cmd(types::common_cmd::set_block_length(512), false)?;
 
-        // CMD18: READ_MULTIPLE_BLOCK
-        // Wait for CMD and DAT lines to be free
-        while regs.pstate().read().cmd_inhibit() {}
-        while regs.pstate().read().dat_inhibit() {}
+        #[cfg(feature = "defmt")]
+        defmt::debug!("Sending CMD18 (READ_MULTIPLE_BLOCK), addr={}", address);
 
-        // Set command argument first
-        regs.cmd_arg().write(|w| w.0 = address);
+        // CMD18: READ_MULTIPLE_BLOCK with ADMA2 multi-block mode
+        self.cmd_adma2_multi_read(types::common_cmd::read_multiple_blocks(address))?;
 
-        // Configure for multi-block data transfer
-        regs.cmd_xfer().write(|w| {
-            w.set_cmd_index(18);
-            w.set_resp_type_select(2); // R1
-            w.set_cmd_crc_chk_enable(true);
-            w.set_cmd_idx_chk_enable(true);
-            w.set_data_present_sel(true);
-            w.set_data_xfer_dir(true); // Read
-            w.set_multi_blk_sel(true);
-            w.set_block_count_enable(true);
-        });
+        #[cfg(feature = "defmt")]
+        defmt::debug!("CMD18 sent, waiting for xfer_complete...");
 
-        // Wait for command complete
+        // Wait for transfer complete with timeout
+        let mut timeout_count = 0u32;
         loop {
             let status = regs.int_stat().read();
-            if status.cmd_complete() {
-                regs.int_stat().write(|w| w.set_cmd_complete(true));
-                break;
-            }
-            if status.cmd_tout_err() {
-                return Err(Error::Timeout);
-            }
-            if status.cmd_crc_err() {
-                return Err(Error::Crc);
-            }
-        }
 
-        // Read each block using PIO
-        for buffer in buffers.iter_mut() {
-            // Wait for buffer ready
-            loop {
-                let status = regs.int_stat().read();
-                if status.data_tout_err() {
-                    // Try to send STOP command before returning error
-                    let _ = self.cmd(types::common_cmd::stop_transmission(), false);
-                    return Err(Error::DataTimeout);
-                }
-                if status.data_crc_err() {
-                    let _ = self.cmd(types::common_cmd::stop_transmission(), false);
-                    return Err(Error::DataCrc);
-                }
-                if status.buf_rd_ready() {
-                    regs.int_stat().write(|w| w.set_buf_rd_ready(true));
-                    break;
-                }
-            }
-
-            // Read data (PIO mode)
-            let data = buffer.as_mut_slice();
-            for i in 0..128 {
-                let word = regs.buf_data().read().0;
-                let offset = i * 4;
-                data[offset] = word as u8;
-                data[offset + 1] = (word >> 8) as u8;
-                data[offset + 2] = (word >> 16) as u8;
-                data[offset + 3] = (word >> 24) as u8;
-            }
-        }
-
-        // Wait for transfer complete
-        loop {
-            let status = regs.int_stat().read();
-            if status.xfer_complete() {
-                regs.int_stat().write(|w| w.set_xfer_complete(true));
-                break;
-            }
             if status.data_tout_err() {
+                #[cfg(feature = "defmt")]
+                defmt::error!("Data timeout error! INT_STAT=0x{:08X}", status.0);
                 let _ = self.cmd(types::common_cmd::stop_transmission(), false);
                 return Err(Error::DataTimeout);
             }
+            if status.data_crc_err() {
+                #[cfg(feature = "defmt")]
+                defmt::error!("Data CRC error! INT_STAT=0x{:08X}", status.0);
+                let _ = self.cmd(types::common_cmd::stop_transmission(), false);
+                return Err(Error::DataCrc);
+            }
+            if status.adma_err() {
+                #[cfg(feature = "defmt")]
+                {
+                    let adma_err = regs.adma_err_stat().read();
+                    defmt::error!("ADMA error! INT_STAT=0x{:08X}, ADMA_ERR=0x{:08X}", status.0, adma_err.0);
+                }
+                let _ = self.cmd(types::common_cmd::stop_transmission(), false);
+                return Err(Error::AdmaError);
+            }
+            if status.xfer_complete() {
+                regs.int_stat().write(|w| w.set_xfer_complete(true));
+                #[cfg(feature = "defmt")]
+                defmt::debug!("Transfer complete!");
+                break;
+            }
+
+            timeout_count += 1;
+            if timeout_count > 50_000_000 {
+                #[cfg(feature = "defmt")]
+                defmt::error!("Software timeout! INT_STAT=0x{:08X}, PSTATE=0x{:08X}", status.0, regs.pstate().read().0);
+                let _ = self.cmd(types::common_cmd::stop_transmission(), false);
+                return Err(Error::SoftwareTimeout);
+            }
         }
 
-        // CMD12: STOP_TRANSMISSION
-        self.cmd(types::common_cmd::stop_transmission(), false)?;
+        Ok(())
+    }
 
+    /// Read multiple 512-byte blocks (simple API using SDMA)
+    ///
+    /// Note: For better performance with many blocks, use `read_blocks_adma2` instead.
+    /// This function uses repeated single-block SDMA reads for reliability.
+    pub fn read_blocks(&mut self, block_idx: u32, buffers: &mut [DataBlock]) -> Result<(), Error> {
+        // Use repeated single-block reads with SDMA (simpler and reliable)
+        for (i, buffer) in buffers.iter_mut().enumerate() {
+            self.read_block(block_idx + i as u32, buffer)?;
+        }
         Ok(())
     }
 
@@ -1027,15 +1199,24 @@ impl<'d> Sdxc<'d, Blocking> {
     }
 
     /// Write multiple 512-byte blocks
+    /// Write multiple 512-byte blocks using ADMA2
     ///
-    /// Uses CMD25 (WRITE_MULTIPLE_BLOCK) followed by CMD12 (STOP_TRANSMISSION).
-    /// This is more efficient than calling `write_block` multiple times.
-    pub fn write_blocks(&mut self, block_idx: u32, buffers: &[DataBlock]) -> Result<(), Error> {
+    /// Uses CMD25 (WRITE_MULTIPLE_BLOCK) with ADMA2 for efficient multi-block transfer.
+    /// The descriptor table must be provided by the caller and placed in DMA-accessible memory.
+    ///
+    /// # Arguments
+    /// - `block_idx`: Starting block index
+    /// - `buffers`: Array of DataBlocks to write
+    /// - `adma_table`: ADMA2 descriptor table (must have at least `buffers.len()` entries)
+    pub fn write_blocks_adma2<const N: usize>(
+        &mut self,
+        block_idx: u32,
+        buffers: &[DataBlock],
+        adma_table: &mut types::Adma2Table<N>,
+    ) -> Result<(), Error> {
         if buffers.is_empty() {
             return Ok(());
         }
-
-        // Use single block write for just one block
         if buffers.len() == 1 {
             return self.write_block(block_idx, &buffers[0]);
         }
@@ -1052,7 +1233,10 @@ impl<'d> Sdxc<'d, Blocking> {
 
         let block_count = buffers.len() as u16;
 
-        // Configure multi-block transfer
+        // Setup ADMA2 descriptors
+        let _desc_count = adma_table.setup_write(buffers);
+
+        // Configure block transfer
         regs.blk_attr().write(|w| {
             w.set_xfer_block_size(512);
             w.set_block_cnt(block_count);
@@ -1061,88 +1245,54 @@ impl<'d> Sdxc<'d, Blocking> {
         // Clear status
         regs.int_stat().write(|w| w.0 = 0xFFFFFFFF);
 
+        // Configure ADMA2
+        regs.prot_ctrl().modify(|w| w.set_dma_sel(2)); // ADMA2
+        regs.adma_sys_addr().write(|w| w.0 = adma_table.as_ptr() as u32);
+
         // CMD16: SET_BLOCKLEN
         self.cmd(types::common_cmd::set_block_length(512), false)?;
 
-        // CMD25: WRITE_MULTIPLE_BLOCK
-        // Wait for CMD and DAT lines to be free
-        while regs.pstate().read().cmd_inhibit() {}
-        while regs.pstate().read().dat_inhibit() {}
-
-        // Set command argument first
-        regs.cmd_arg().write(|w| w.0 = address);
-
-        // Configure for multi-block data transfer
-        regs.cmd_xfer().write(|w| {
-            w.set_cmd_index(25);
-            w.set_resp_type_select(2); // R1
-            w.set_cmd_crc_chk_enable(true);
-            w.set_cmd_idx_chk_enable(true);
-            w.set_data_present_sel(true);
-            w.set_data_xfer_dir(false); // Write
-            w.set_multi_blk_sel(true);
-            w.set_block_count_enable(true);
-        });
-
-        // Wait for command complete
-        loop {
-            let status = regs.int_stat().read();
-            if status.cmd_complete() {
-                regs.int_stat().write(|w| w.set_cmd_complete(true));
-                break;
-            }
-            if status.cmd_tout_err() {
-                return Err(Error::Timeout);
-            }
-            if status.cmd_crc_err() {
-                return Err(Error::Crc);
-            }
-        }
-
-        // Write each block using PIO
-        for buffer in buffers.iter() {
-            // Wait for buffer ready
-            loop {
-                let status = regs.int_stat().read();
-                if status.data_tout_err() {
-                    // Try to send STOP command before returning error
-                    let _ = self.cmd(types::common_cmd::stop_transmission(), false);
-                    return Err(Error::DataTimeout);
-                }
-                if status.buf_wr_ready() {
-                    regs.int_stat().write(|w| w.set_buf_wr_ready(true));
-                    break;
-                }
-            }
-
-            // Write data (PIO mode)
-            let data = buffer.as_slice();
-            for i in 0..128 {
-                let offset = i * 4;
-                let word = (data[offset] as u32)
-                    | ((data[offset + 1] as u32) << 8)
-                    | ((data[offset + 2] as u32) << 16)
-                    | ((data[offset + 3] as u32) << 24);
-                regs.buf_data().write(|w| w.0 = word);
-            }
-        }
+        // CMD25: WRITE_MULTIPLE_BLOCK with ADMA2 multi-block mode
+        self.cmd_adma2_multi_write(types::common_cmd::write_multiple_blocks(address))?;
 
         // Wait for transfer complete
         loop {
             let status = regs.int_stat().read();
-            if status.xfer_complete() {
-                regs.int_stat().write(|w| w.set_xfer_complete(true));
-                break;
-            }
             if status.data_tout_err() {
                 let _ = self.cmd(types::common_cmd::stop_transmission(), false);
                 return Err(Error::DataTimeout);
             }
+            if status.data_crc_err() {
+                let _ = self.cmd(types::common_cmd::stop_transmission(), false);
+                return Err(Error::DataCrc);
+            }
+            if status.adma_err() {
+                let _ = self.cmd(types::common_cmd::stop_transmission(), false);
+                return Err(Error::AdmaError);
+            }
+            if status.xfer_complete() {
+                regs.int_stat().write(|w| w.set_xfer_complete(true));
+                break;
+            }
         }
 
-        // CMD12: STOP_TRANSMISSION
-        self.cmd(types::common_cmd::stop_transmission(), false)?;
+        // Note: Auto CMD12 is enabled, so no need to manually send STOP_TRANSMISSION
 
+        // Wait for card to be ready (programming complete)
+        self.wait_card_ready()?;
+
+        Ok(())
+    }
+
+    /// Write multiple 512-byte blocks (simple API using SDMA)
+    ///
+    /// Note: For better performance with many blocks, use `write_blocks_adma2` instead.
+    /// This function uses repeated single-block SDMA writes for reliability.
+    pub fn write_blocks(&mut self, block_idx: u32, buffers: &[DataBlock]) -> Result<(), Error> {
+        // Use repeated single-block writes with SDMA (simpler and reliable)
+        for (i, buffer) in buffers.iter().enumerate() {
+            self.write_block(block_idx + i as u32, buffer)?;
+        }
         Ok(())
     }
 }
@@ -1187,7 +1337,371 @@ impl<'d> Sdxc<'d, Async> {
         )
     }
 
-    // TODO: Implement async methods
+    /// Async read single block using SDMA + interrupt
+    pub async fn read_block_async(&mut self, block_idx: u32, buffer: &mut DataBlock) -> Result<(), Error> {
+        use core::future::poll_fn;
+        use core::task::Poll;
+
+        let card = self.card.as_ref().ok_or(Error::NoCard)?;
+        let regs = self.info.regs;
+        let state = self.state;
+
+        // Address conversion
+        let address = match card.card_type {
+            types::CardCapacity::StandardCapacity => block_idx * 512,
+            types::CardCapacity::HighCapacity => block_idx,
+            _ => block_idx,
+        };
+
+        // Configure block transfer
+        regs.blk_attr().write(|w| {
+            w.set_xfer_block_size(512);
+            w.set_block_cnt(1);
+        });
+
+        // Clear all status
+        regs.int_stat().write(|w| w.0 = 0xFFFFFFFF);
+        state.clear_error();
+
+        // Configure SDMA
+        regs.prot_ctrl().modify(|w| w.set_dma_sel(0)); // SDMA
+        regs.adma_sys_addr().write(|w| w.0 = buffer.0.as_ptr() as u32);
+
+        // Enable interrupts (status enable + signal enable)
+        regs.int_stat_en().write(|w| {
+            w.set_cmd_complete_stat_en(true);
+            w.set_xfer_complete_stat_en(true);
+            w.set_dma_interrupt_stat_en(true);
+            w.set_data_tout_err_stat_en(true);
+            w.set_data_crc_err_stat_en(true);
+            w.set_cmd_tout_err_stat_en(true);
+        });
+        regs.int_signal_en().write(|w| {
+            w.set_xfer_complete_signal_en(true);
+            w.set_data_tout_err_signal_en(true);
+            w.set_data_crc_err_signal_en(true);
+        });
+
+        // CMD16: SET_BLOCKLEN
+        self.cmd(types::common_cmd::set_block_length(512), false)?;
+
+        // CMD17: READ_SINGLE_BLOCK with DMA
+        self.cmd_dma(types::common_cmd::read_single_block(address))?;
+
+        // Async wait for transfer complete
+        let result = poll_fn(|cx| {
+            state.waker.register(cx.waker());
+            let status = regs.int_stat().read();
+
+            if status.data_tout_err() {
+                return Poll::Ready(Err(Error::DataTimeout));
+            }
+            if status.data_crc_err() {
+                return Poll::Ready(Err(Error::DataCrc));
+            }
+            if status.xfer_complete() {
+                return Poll::Ready(Ok(()));
+            }
+            Poll::Pending
+        })
+        .await;
+
+        // Disable interrupts
+        regs.int_signal_en().write(|_| {});
+
+        // Clear status
+        regs.int_stat().write(|w| w.0 = 0xFFFFFFFF);
+
+        result
+    }
+
+    /// Async write single block using SDMA + interrupt
+    pub async fn write_block_async(&mut self, block_idx: u32, buffer: &DataBlock) -> Result<(), Error> {
+        use core::future::poll_fn;
+        use core::task::Poll;
+
+        let card = self.card.as_ref().ok_or(Error::NoCard)?;
+        let regs = self.info.regs;
+        let state = self.state;
+
+        // Address conversion
+        let address = match card.card_type {
+            types::CardCapacity::StandardCapacity => block_idx * 512,
+            types::CardCapacity::HighCapacity => block_idx,
+            _ => block_idx,
+        };
+
+        // Configure block transfer
+        regs.blk_attr().write(|w| {
+            w.set_xfer_block_size(512);
+            w.set_block_cnt(1);
+        });
+
+        // Clear all status
+        regs.int_stat().write(|w| w.0 = 0xFFFFFFFF);
+        state.clear_error();
+
+        // Configure SDMA
+        regs.prot_ctrl().modify(|w| w.set_dma_sel(0)); // SDMA
+        regs.adma_sys_addr().write(|w| w.0 = buffer.0.as_ptr() as u32);
+
+        // Enable interrupts
+        regs.int_stat_en().write(|w| {
+            w.set_cmd_complete_stat_en(true);
+            w.set_xfer_complete_stat_en(true);
+            w.set_dma_interrupt_stat_en(true);
+            w.set_data_tout_err_stat_en(true);
+            w.set_data_crc_err_stat_en(true);
+            w.set_cmd_tout_err_stat_en(true);
+        });
+        regs.int_signal_en().write(|w| {
+            w.set_xfer_complete_signal_en(true);
+            w.set_data_tout_err_signal_en(true);
+            w.set_data_crc_err_signal_en(true);
+        });
+
+        // CMD16: SET_BLOCKLEN
+        self.cmd(types::common_cmd::set_block_length(512), false)?;
+
+        // CMD24: WRITE_SINGLE_BLOCK with DMA
+        self.cmd_dma_write(types::common_cmd::write_single_block(address))?;
+
+        // Async wait for transfer complete
+        let result = poll_fn(|cx| {
+            state.waker.register(cx.waker());
+            let status = regs.int_stat().read();
+
+            if status.data_tout_err() {
+                return Poll::Ready(Err(Error::DataTimeout));
+            }
+            if status.data_crc_err() {
+                return Poll::Ready(Err(Error::DataCrc));
+            }
+            if status.xfer_complete() {
+                return Poll::Ready(Ok(()));
+            }
+            Poll::Pending
+        })
+        .await;
+
+        // Disable interrupts
+        regs.int_signal_en().write(|_| {});
+
+        // Clear status
+        regs.int_stat().write(|w| w.0 = 0xFFFFFFFF);
+
+        // Wait for card to be ready
+        if result.is_ok() {
+            self.wait_card_ready()?;
+        }
+
+        result
+    }
+
+    /// Async multi-block read using ADMA2 + interrupt
+    pub async fn read_blocks_async<const N: usize>(
+        &mut self,
+        block_idx: u32,
+        buffers: &mut [DataBlock],
+        adma_table: &mut types::Adma2Table<N>,
+    ) -> Result<(), Error> {
+        use core::future::poll_fn;
+        use core::task::Poll;
+
+        if buffers.is_empty() {
+            return Ok(());
+        }
+        if buffers.len() == 1 {
+            return self.read_block_async(block_idx, &mut buffers[0]).await;
+        }
+
+        let card = self.card.as_ref().ok_or(Error::NoCard)?;
+        let regs = self.info.regs;
+        let state = self.state;
+
+        // Address conversion
+        let address = match card.card_type {
+            types::CardCapacity::StandardCapacity => block_idx * 512,
+            types::CardCapacity::HighCapacity => block_idx,
+            _ => block_idx,
+        };
+
+        let block_count = buffers.len() as u16;
+
+        // Setup ADMA2 descriptors
+        let _ = adma_table.setup_read(buffers);
+
+        // Configure block transfer
+        regs.blk_attr().write(|w| {
+            w.set_xfer_block_size(512);
+            w.set_block_cnt(block_count);
+        });
+
+        // Clear all status
+        regs.int_stat().write(|w| w.0 = 0xFFFFFFFF);
+        state.clear_error();
+
+        // Configure ADMA2
+        regs.prot_ctrl().modify(|w| w.set_dma_sel(2)); // ADMA2
+        regs.adma_sys_addr().write(|w| w.0 = adma_table.as_ptr() as u32);
+
+        // Enable interrupts
+        regs.int_stat_en().write(|w| {
+            w.set_cmd_complete_stat_en(true);
+            w.set_xfer_complete_stat_en(true);
+            w.set_dma_interrupt_stat_en(true);
+            w.set_data_tout_err_stat_en(true);
+            w.set_data_crc_err_stat_en(true);
+            w.set_cmd_tout_err_stat_en(true);
+            w.set_adma_err_stat_en(true);
+        });
+        regs.int_signal_en().write(|w| {
+            w.set_xfer_complete_signal_en(true);
+            w.set_data_tout_err_signal_en(true);
+            w.set_data_crc_err_signal_en(true);
+            w.set_adma_err_signal_en(true);
+        });
+
+        // CMD16: SET_BLOCKLEN
+        self.cmd(types::common_cmd::set_block_length(512), false)?;
+
+        // CMD18: READ_MULTIPLE_BLOCK with ADMA2
+        self.cmd_adma2_multi_read(types::common_cmd::read_multiple_blocks(address))?;
+
+        // Async wait for transfer complete
+        let result = poll_fn(|cx| {
+            state.waker.register(cx.waker());
+            let status = regs.int_stat().read();
+
+            if status.data_tout_err() {
+                return Poll::Ready(Err(Error::DataTimeout));
+            }
+            if status.data_crc_err() {
+                return Poll::Ready(Err(Error::DataCrc));
+            }
+            if status.adma_err() {
+                return Poll::Ready(Err(Error::AdmaError));
+            }
+            if status.xfer_complete() {
+                return Poll::Ready(Ok(()));
+            }
+            Poll::Pending
+        })
+        .await;
+
+        // Disable interrupts
+        regs.int_signal_en().write(|_| {});
+
+        // Clear status
+        regs.int_stat().write(|w| w.0 = 0xFFFFFFFF);
+
+        result
+    }
+
+    /// Async multi-block write using ADMA2 + interrupt
+    pub async fn write_blocks_async<const N: usize>(
+        &mut self,
+        block_idx: u32,
+        buffers: &[DataBlock],
+        adma_table: &mut types::Adma2Table<N>,
+    ) -> Result<(), Error> {
+        use core::future::poll_fn;
+        use core::task::Poll;
+
+        if buffers.is_empty() {
+            return Ok(());
+        }
+        if buffers.len() == 1 {
+            return self.write_block_async(block_idx, &buffers[0]).await;
+        }
+
+        let card = self.card.as_ref().ok_or(Error::NoCard)?;
+        let regs = self.info.regs;
+        let state = self.state;
+
+        // Address conversion
+        let address = match card.card_type {
+            types::CardCapacity::StandardCapacity => block_idx * 512,
+            types::CardCapacity::HighCapacity => block_idx,
+            _ => block_idx,
+        };
+
+        let block_count = buffers.len() as u16;
+
+        // Setup ADMA2 descriptors
+        let _ = adma_table.setup_write(buffers);
+
+        // Configure block transfer
+        regs.blk_attr().write(|w| {
+            w.set_xfer_block_size(512);
+            w.set_block_cnt(block_count);
+        });
+
+        // Clear all status
+        regs.int_stat().write(|w| w.0 = 0xFFFFFFFF);
+        state.clear_error();
+
+        // Configure ADMA2
+        regs.prot_ctrl().modify(|w| w.set_dma_sel(2)); // ADMA2
+        regs.adma_sys_addr().write(|w| w.0 = adma_table.as_ptr() as u32);
+
+        // Enable interrupts
+        regs.int_stat_en().write(|w| {
+            w.set_cmd_complete_stat_en(true);
+            w.set_xfer_complete_stat_en(true);
+            w.set_dma_interrupt_stat_en(true);
+            w.set_data_tout_err_stat_en(true);
+            w.set_data_crc_err_stat_en(true);
+            w.set_cmd_tout_err_stat_en(true);
+            w.set_adma_err_stat_en(true);
+        });
+        regs.int_signal_en().write(|w| {
+            w.set_xfer_complete_signal_en(true);
+            w.set_data_tout_err_signal_en(true);
+            w.set_data_crc_err_signal_en(true);
+            w.set_adma_err_signal_en(true);
+        });
+
+        // CMD16: SET_BLOCKLEN
+        self.cmd(types::common_cmd::set_block_length(512), false)?;
+
+        // CMD25: WRITE_MULTIPLE_BLOCK with ADMA2
+        self.cmd_adma2_multi_write(types::common_cmd::write_multiple_blocks(address))?;
+
+        // Async wait for transfer complete
+        let result = poll_fn(|cx| {
+            state.waker.register(cx.waker());
+            let status = regs.int_stat().read();
+
+            if status.data_tout_err() {
+                return Poll::Ready(Err(Error::DataTimeout));
+            }
+            if status.data_crc_err() {
+                return Poll::Ready(Err(Error::DataCrc));
+            }
+            if status.adma_err() {
+                return Poll::Ready(Err(Error::AdmaError));
+            }
+            if status.xfer_complete() {
+                return Poll::Ready(Ok(()));
+            }
+            Poll::Pending
+        })
+        .await;
+
+        // Disable interrupts
+        regs.int_signal_en().write(|_| {});
+
+        // Clear status
+        regs.int_stat().write(|w| w.0 = 0xFFFFFFFF);
+
+        // Wait for card to be ready
+        if result.is_ok() {
+            self.wait_card_ready()?;
+        }
+
+        result
+    }
 }
 
 impl<'d, M: Mode> Drop for Sdxc<'d, M> {
