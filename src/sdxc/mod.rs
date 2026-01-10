@@ -5,15 +5,16 @@
 //! # Current Status
 //!
 //! - ✅ Blocking single-block read/write (SDMA mode, errata E00033 workaround)
+//! - ✅ ADMA2 multi-block read/write (blocking and async)
+//! - ✅ Async mode with interrupt-driven transfers
 //! - ✅ FAT32 filesystem via embedded-sdmmc BlockDevice trait
-//! - ⚠️ Multi-block read/write: uses single-block loop (PIO mode broken)
+//! - ✅ High Speed mode (SDR25, 50MHz) at 3.3V
 //!
-//! # TODO (Phase 2/3)
+//! # TODO (Phase 3)
 //!
-//! - [ ] ADMA2 support for efficient multi-block transfers
-//! - [ ] Async mode with interrupt-driven transfers
-//! - [ ] High speed modes (SDR50, SDR104) with 1.8V signaling
-//! - [ ] Fix CSD v2.0 parsing for SDHC capacity display
+//! - [ ] UHS-I modes (SDR50, SDR104) with 1.8V signaling
+//! - [ ] Auto-tuning for SDR50/SDR104
+//! - [ ] DDR50 mode
 //!
 //! See `PHASE2_PLAN.md` for implementation details.
 //!
@@ -44,7 +45,6 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use embassy_hal_internal::Peri;
 use embassy_sync::waitqueue::AtomicWaker;
-use sdio_host::Cmd;
 
 use crate::gpio::AnyPin;
 use crate::interrupt::typelevel::Interrupt as _;
@@ -234,7 +234,8 @@ impl<'d, M: Mode> Sdxc<'d, M> {
         let state = T::state();
         let regs = info.regs;
 
-        // HPM6360 specific: Configure MISC_CTRL0 first
+        // HPM63xx specific: Configure MISC_CTRL0 first
+        #[cfg(sdxc_v63)]
         regs.misc_ctrl0().modify(|w| w.set_cardclk_inv_en(false));
 
         // Disable SD clock during configuration
@@ -244,7 +245,8 @@ impl<'d, M: Mode> Sdxc<'d, M> {
         regs.sys_ctrl().modify(|w| w.set_sw_rst_all(true));
         while regs.sys_ctrl().read().sw_rst_all() {}
 
-        // Enable timeout clock (critical for HPM6360)
+        // Enable timeout clock (HPM63xx specific)
+        #[cfg(sdxc_v63)]
         regs.misc_ctrl0().modify(|w| w.set_tmclk_en(true));
 
         // Configure timeout
@@ -310,11 +312,25 @@ impl<'d, M: Mode> Sdxc<'d, M> {
         // Disable SD clock
         regs.sys_ctrl().modify(|w| w.set_sd_clk_en(false));
 
-        // Set divider using MISC_CTRL0 (HPM specific)
-        regs.misc_ctrl0().modify(|w| {
-            w.set_freq_sel_sw(divider);
-            w.set_freq_sel_sw_en(true);
-        });
+        // Set divider - different approach for different SDXC versions
+        #[cfg(sdxc_v63)]
+        {
+            // HPM63xx: Use MISC_CTRL0 software divider
+            regs.misc_ctrl0().modify(|w| {
+                w.set_freq_sel_sw(divider);
+                w.set_freq_sel_sw_en(true);
+            });
+        }
+
+        #[cfg(sdxc_v67)]
+        {
+            // HPM67xx/64xx: Use standard SD Host Controller clock divider
+            // FREQ_SEL is 8-bit (low) + UPPER_FREQ_SEL is 2-bit (high) = 10-bit total
+            regs.sys_ctrl().modify(|w| {
+                w.set_freq_sel((divider & 0xFF) as u8);
+                w.set_upper_freq_sel(((divider >> 8) & 0x3) as u8);
+            });
+        }
 
         // Enable internal clock and wait for stable
         regs.sys_ctrl().modify(|w| w.set_internal_clk_en(true));
@@ -334,8 +350,27 @@ impl<'d, M: Mode> Sdxc<'d, M> {
     /// Send 74+ clock cycles to activate card
     pub fn wait_card_active(&self) {
         let regs = self.info.regs;
-        regs.misc_ctrl1().modify(|w| w.set_card_active(true));
-        while regs.misc_ctrl1().read().card_active() {}
+
+        // Ensure SD clock is enabled
+        regs.sys_ctrl().modify(|w| w.set_sd_clk_en(true));
+        while !regs.sys_ctrl().read().sd_clk_en() {}
+
+        #[cfg(sdxc_v63)]
+        {
+            // HPM63xx: Use hardware CARD_ACTIVE bit
+            regs.misc_ctrl1().modify(|w| w.set_card_active(true));
+            while regs.misc_ctrl1().read().card_active() {}
+        }
+
+        #[cfg(sdxc_v67)]
+        {
+            // HPM67xx/64xx: Use software delay loop
+            // At 400KHz identification clock, 74 clocks = 185us
+            // Use 50000 iterations to ensure sufficient delay
+            for _ in 0..50000u32 {
+                let _ = regs.capabilities1().read();
+            }
+        }
     }
 
     /// Wait for card to be ready (not in programming state)
@@ -364,7 +399,7 @@ impl<'d, M: Mode> Sdxc<'d, M> {
     }
 
     /// Send a command and wait for response (blocking)
-    fn cmd<R: Resp>(&self, cmd: Cmd<R>, data: bool) -> Result<(), Error> {
+    fn cmd<R: types::Resp>(&self, cmd: types::Cmd<R>, data: bool) -> Result<(), Error> {
         let regs = self.info.regs;
 
         // Clear interrupt status
@@ -450,7 +485,7 @@ impl<'d, M: Mode> Sdxc<'d, M> {
     }
 
     /// Send a data read command with DMA enabled (blocking) - for single block SDMA
-    fn cmd_dma<R: Resp>(&self, cmd: Cmd<R>) -> Result<(), Error> {
+    fn cmd_dma<R: types::Resp>(&self, cmd: types::Cmd<R>) -> Result<(), Error> {
         let regs = self.info.regs;
 
         // Clear interrupt status
@@ -508,7 +543,7 @@ impl<'d, M: Mode> Sdxc<'d, M> {
     }
 
     /// Send a data write command with DMA enabled (blocking) - for single block SDMA
-    fn cmd_dma_write<R: Resp>(&self, cmd: Cmd<R>) -> Result<(), Error> {
+    fn cmd_dma_write<R: types::Resp>(&self, cmd: types::Cmd<R>) -> Result<(), Error> {
         let regs = self.info.regs;
 
         // Clear interrupt status
@@ -566,7 +601,7 @@ impl<'d, M: Mode> Sdxc<'d, M> {
     }
 
     /// Send a multi-block data read command with ADMA2 enabled (blocking)
-    fn cmd_adma2_multi_read<R: Resp>(&self, cmd: Cmd<R>) -> Result<(), Error> {
+    fn cmd_adma2_multi_read<R: types::Resp>(&self, cmd: types::Cmd<R>) -> Result<(), Error> {
         let regs = self.info.regs;
 
         // Wait for CMD and DAT lines to be free
@@ -624,7 +659,7 @@ impl<'d, M: Mode> Sdxc<'d, M> {
     }
 
     /// Send a multi-block data write command with ADMA2 enabled (blocking)
-    fn cmd_adma2_multi_write<R: Resp>(&self, cmd: Cmd<R>) -> Result<(), Error> {
+    fn cmd_adma2_multi_write<R: types::Resp>(&self, cmd: types::Cmd<R>) -> Result<(), Error> {
         let regs = self.info.regs;
 
         // Wait for CMD and DAT lines to be free
@@ -822,6 +857,18 @@ impl<'d, M: Mode> Sdxc<'d, M> {
                     self.set_bus_width(BusWidth::Four);
                 }
 
+                // Try to switch to High Speed mode (SDR25) if supported
+                // This is safe at 3.3V and doesn't require voltage switching
+                if freq.0 >= 50_000_000 {
+                    if let Ok(signalling) = self.switch_signalling_mode(Signalling::SDR25) {
+                        if signalling == Signalling::SDR25 {
+                            // Successfully switched to High Speed
+                            self.set_clock(Hertz(Signalling::SDR25.clock_hz()));
+                        }
+                    }
+                    // If switch failed, we continue with default speed mode
+                }
+
                 return Ok(());
             }
 
@@ -832,6 +879,165 @@ impl<'d, M: Mode> Sdxc<'d, M> {
         }
 
         Err(Error::Timeout)
+    }
+
+    /// Switch signalling mode using CMD6 (SWITCH_FUNC)
+    ///
+    /// Attempts to switch the card to the specified speed mode.
+    /// Returns the actual mode the card switched to.
+    ///
+    /// Note: SDR50, SDR104, and DDR50 require 1.8V signaling which may not be
+    /// supported on all boards. SDR25 (High Speed) works with 3.3V.
+    pub fn switch_signalling_mode(&mut self, mode: Signalling) -> Result<Signalling, Error> {
+        let card = self.card.as_ref().ok_or(Error::NoCard)?;
+        let rca = card.rca;
+
+        // For UHS modes, we would need to check 1.8V support
+        if mode.requires_1v8() {
+            // TODO: Check if 1.8V signaling is supported
+            // For now, reject UHS modes that require voltage switching
+            return Err(Error::UnsupportedSpeedMode);
+        }
+
+        // CMD6: SWITCH_FUNC - Check if mode is supported
+        let mut status = SwitchFunctionStatus::new();
+        self.send_switch_function(
+            SwitchFunctionMode::Check,
+            SwitchFunctionGroup::AccessMode,
+            mode.switch_function_value() as u8,
+            &mut status,
+        )?;
+
+        // Check if requested mode is supported
+        let supported = match mode {
+            Signalling::SDR12 => true, // Always supported
+            Signalling::SDR25 => status.supports_sdr25(),
+            Signalling::SDR50 => status.supports_sdr50(),
+            Signalling::SDR104 => status.supports_sdr104(),
+            Signalling::DDR50 => status.supports_ddr50(),
+        };
+
+        if !supported {
+            return Err(Error::UnsupportedSpeedMode);
+        }
+
+        // CMD6: SWITCH_FUNC - Set the mode
+        self.send_switch_function(
+            SwitchFunctionMode::Set,
+            SwitchFunctionGroup::AccessMode,
+            mode.switch_function_value() as u8,
+            &mut status,
+        )?;
+
+        // Verify the switch was successful
+        let selected = status.selected_access_mode();
+        let actual_mode = match selected {
+            0 => Signalling::SDR12,
+            1 => Signalling::SDR25,
+            2 => Signalling::SDR50,
+            3 => Signalling::SDR104,
+            4 => Signalling::DDR50,
+            _ => return Err(Error::SignallingSwitchFailed),
+        };
+
+        // Small delay after mode switch (at least 8 clocks)
+        for _ in 0..1000 {
+            core::hint::spin_loop();
+        }
+
+        // Verify card is still in transfer state
+        self.cmd(types::common_cmd::card_status(rca, false), false)?;
+        let status_word = self.get_response();
+        let card_status: types::CardStatus<types::SD> = types::CardStatus::from(status_word);
+        if card_status.state() != types::CurrentState::Transfer {
+            return Err(Error::SignallingSwitchFailed);
+        }
+
+        Ok(actual_mode)
+    }
+
+    /// Send CMD6 (SWITCH_FUNC) command
+    ///
+    /// This command is used to check and switch card functions like speed mode,
+    /// driver strength, and power limit.
+    fn send_switch_function(
+        &mut self,
+        mode: SwitchFunctionMode,
+        group: SwitchFunctionGroup,
+        function: u8,
+        status: &mut SwitchFunctionStatus,
+    ) -> Result<(), Error> {
+        let regs = self.info.regs;
+
+        // Build CMD6 argument
+        // Bits 31: Mode (0=Check, 1=Set)
+        // Bits 23:20: Group 6 (reserved)
+        // Bits 19:16: Group 5 (reserved)
+        // Bits 15:12: Group 4 (Power Limit)
+        // Bits 11:8:  Group 3 (Driver Strength)
+        // Bits 7:4:   Group 2 (Command System)
+        // Bits 3:0:   Group 1 (Access Mode)
+        let mut arg = 0x00FFFFFFu32; // Default: no change to any group
+        let shift = ((group as u8) - 1) * 4;
+        arg &= !(0xF << shift); // Clear the bits for our group
+        arg |= (function as u32 & 0xF) << shift; // Set our function
+        if mode as u8 == 1 {
+            arg |= 1 << 31; // Set mode bit
+        }
+
+        // Configure block transfer for 64-byte status response
+        regs.blk_attr().write(|w| {
+            w.set_xfer_block_size(64);
+            w.set_block_cnt(1);
+        });
+
+        // Clear all status
+        regs.int_stat().write(|w| w.0 = 0xFFFFFFFF);
+
+        // Configure SDMA buffer address
+        regs.prot_ctrl().modify(|w| w.set_dma_sel(0)); // SDMA
+        regs.adma_sys_addr().write(|w| w.0 = status.data.as_ptr() as u32);
+
+        // CMD16: SET_BLOCKLEN (64 bytes for switch status)
+        self.cmd(types::common_cmd::set_block_length(64), false)?;
+
+        // CMD6: SWITCH_FUNC with DMA
+        self.cmd_dma(types::sd_cmd::cmd6(arg))?;
+
+        // Wait for transfer complete
+        let mut timeout_count = 0u32;
+        loop {
+            let int_status = regs.int_stat().read();
+
+            if int_status.xfer_complete() {
+                regs.int_stat().write(|w| w.set_xfer_complete(true));
+                break;
+            }
+
+            if int_status.data_tout_err() {
+                return Err(Error::DataTimeout);
+            }
+            if int_status.data_crc_err() {
+                return Err(Error::DataCrc);
+            }
+
+            timeout_count += 1;
+            if timeout_count > 10_000_000 {
+                return Err(Error::SoftwareTimeout);
+            }
+        }
+
+        // Convert from big-endian (SD card sends data MSB first)
+        // The DMA writes data in transmission order, so we need to:
+        // 1. Reverse the word order
+        // 2. Convert each word from big-endian to little-endian
+        status.convert_endian();
+
+        // Debug: uncomment to see raw CMD6 response
+        // #[cfg(feature = "defmt")]
+        // status.dump_raw();
+
+        Ok(())
     }
 }
 
@@ -1194,6 +1400,9 @@ impl<'d> Sdxc<'d, Blocking> {
                 break;
             }
         }
+
+        // Wait for card to finish internal programming
+        self.wait_card_ready()?;
 
         Ok(())
     }
