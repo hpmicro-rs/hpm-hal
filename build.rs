@@ -386,6 +386,17 @@ fn main() {
         (("i2s", "FCLK"), quote!(crate::i2s::FclkPin)),
         // PDM
         (("pdm", "CLK"), quote!(crate::pdm::ClkPin)),
+        // SDXC
+        (("sdxc", "CLK"), quote!(crate::sdxc::ClkPin)),
+        (("sdxc", "CMD"), quote!(crate::sdxc::CmdPin)),
+        (("sdxc", "DATA0"), quote!(crate::sdxc::D0Pin)),
+        (("sdxc", "DATA1"), quote!(crate::sdxc::D1Pin)),
+        (("sdxc", "DATA2"), quote!(crate::sdxc::D2Pin)),
+        (("sdxc", "DATA3"), quote!(crate::sdxc::D3Pin)),
+        (("sdxc", "DATA4"), quote!(crate::sdxc::D4Pin)),
+        (("sdxc", "DATA5"), quote!(crate::sdxc::D5Pin)),
+        (("sdxc", "DATA6"), quote!(crate::sdxc::D6Pin)),
+        (("sdxc", "DATA7"), quote!(crate::sdxc::D7Pin)),
     ]
     .into();
 

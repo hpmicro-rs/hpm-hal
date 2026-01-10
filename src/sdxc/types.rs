@@ -1,23 +1,25 @@
 //! SDXC types and data structures
 
 // Re-export sdio-host types
-pub use sdio_host::sd::{CardCapacity, CardType, SCR, SDStatus};
-pub use sdio_host::emmc::ExtCSD;
-pub use sdio_host::common_cmd::ResponseLen;
+pub use sdio_host::common_cmd::{self, Cmd, Resp, ResponseLen};
+pub use sdio_host::sd::{CardCapacity, CIC, CID, CSD, OCR, RCA, SCR, SD, SDStatus};
+pub use sdio_host::sd_cmd;
 
-// Simplified Card type (will use sdio-host's later when we implement full protocol)
-#[derive(Debug)]
+/// SD Card information
+#[derive(Debug, Clone, Default)]
 pub struct Card {
+    /// Card type (SDSC/SDHC/SDXC)
     pub card_type: CardCapacity,
+    /// Operation Conditions Register
+    pub ocr: OCR<SD>,
+    /// Relative Card Address
     pub rca: u16,
-    pub card_info: CardType,
+    /// Card ID
+    pub cid: CID<SD>,
+    /// Card Specific Data
+    pub csd: CSD<SD>,
+    /// SD Card Configuration Register
     pub scr: SCR,
-}
-
-// Simplified Emmc type
-#[derive(Debug)]
-pub struct Emmc {
-    pub ext_csd: ExtCSD,
 }
 
 /// Data block, aligned to 4 bytes for DMA transfers
@@ -98,54 +100,27 @@ pub enum BusWidth {
     Eight = 2,
 }
 
-/// Reset type
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum ResetType {
-    /// Reset all
-    All,
-    /// Reset command line
-    Cmd,
-    /// Reset data line
-    Data,
-}
-
 /// SDXC errors
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Error {
-    /// Timeout during command execution
-    CmdTimeout,
-    /// CRC error in command response
-    CmdCrc,
-    /// Command index error
-    CmdIndex,
+    /// Hardware timeout (card didn't respond)
+    Timeout,
+    /// Software timeout (polling loop exceeded)
+    SoftwareTimeout,
+    /// CRC error
+    Crc,
     /// Command end bit error
     CmdEndBit,
-    /// Timeout during data transfer
-    DataTimeout,
-    /// CRC error in data transfer
+    /// Command index error
+    CmdIndex,
+    /// Data CRC error
     DataCrc,
-    /// Data end bit error
-    DataEndBit,
-    /// Current limit error
-    CurrentLimit,
-    /// Auto CMD error
-    AutoCmd,
-    /// ADMA error
-    Adma,
-    /// Tuning error
-    TuningFailed,
-    /// General timeout
-    Timeout,
+    /// Data timeout
+    DataTimeout,
     /// No card inserted
     NoCard,
-    /// Unsupported card type
-    UnsupportedCard,
-    /// Invalid address
-    InvalidAddress,
-    /// ADMA descriptor table not set
-    NoAdmaTable,
-    /// Invalid parameter
-    InvalidParameter,
+    /// Unsupported card version
+    UnsupportedCardVersion,
 }
