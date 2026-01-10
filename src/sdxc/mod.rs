@@ -747,6 +747,130 @@ impl<'d> Sdxc<'d, Blocking> {
         Ok(())
     }
 
+    /// Read multiple 512-byte blocks
+    ///
+    /// Uses CMD18 (READ_MULTIPLE_BLOCK) followed by CMD12 (STOP_TRANSMISSION).
+    /// This is more efficient than calling `read_block` multiple times.
+    pub fn read_blocks(&mut self, block_idx: u32, buffers: &mut [DataBlock]) -> Result<(), Error> {
+        if buffers.is_empty() {
+            return Ok(());
+        }
+
+        // Use single block read for just one block
+        if buffers.len() == 1 {
+            return self.read_block(block_idx, &mut buffers[0]);
+        }
+
+        let card = self.card.as_ref().ok_or(Error::NoCard)?;
+        let regs = self.info.regs;
+
+        // Address conversion
+        let address = match card.card_type {
+            types::CardCapacity::StandardCapacity => block_idx * 512,
+            types::CardCapacity::HighCapacity => block_idx,
+            _ => block_idx,
+        };
+
+        let block_count = buffers.len() as u16;
+
+        // Configure multi-block transfer
+        regs.blk_attr().write(|w| {
+            w.set_xfer_block_size(512);
+            w.set_block_cnt(block_count);
+        });
+
+        // Clear status
+        regs.int_stat().write(|w| w.0 = 0xFFFFFFFF);
+
+        // CMD16: SET_BLOCKLEN
+        self.cmd(types::common_cmd::set_block_length(512), false)?;
+
+        // CMD18: READ_MULTIPLE_BLOCK
+        // Wait for CMD and DAT lines to be free
+        while regs.pstate().read().cmd_inhibit() {}
+        while regs.pstate().read().dat_inhibit() {}
+
+        // Set command argument first
+        regs.cmd_arg().write(|w| w.0 = address);
+
+        // Configure for multi-block data transfer
+        regs.cmd_xfer().write(|w| {
+            w.set_cmd_index(18);
+            w.set_resp_type_select(2); // R1
+            w.set_cmd_crc_chk_enable(true);
+            w.set_cmd_idx_chk_enable(true);
+            w.set_data_present_sel(true);
+            w.set_data_xfer_dir(true); // Read
+            w.set_multi_blk_sel(true);
+            w.set_block_count_enable(true);
+        });
+
+        // Wait for command complete
+        loop {
+            let status = regs.int_stat().read();
+            if status.cmd_complete() {
+                regs.int_stat().write(|w| w.set_cmd_complete(true));
+                break;
+            }
+            if status.cmd_tout_err() {
+                return Err(Error::Timeout);
+            }
+            if status.cmd_crc_err() {
+                return Err(Error::Crc);
+            }
+        }
+
+        // Read each block using PIO
+        for buffer in buffers.iter_mut() {
+            // Wait for buffer ready
+            loop {
+                let status = regs.int_stat().read();
+                if status.data_tout_err() {
+                    // Try to send STOP command before returning error
+                    let _ = self.cmd(types::common_cmd::stop_transmission(), false);
+                    return Err(Error::DataTimeout);
+                }
+                if status.data_crc_err() {
+                    let _ = self.cmd(types::common_cmd::stop_transmission(), false);
+                    return Err(Error::DataCrc);
+                }
+                if status.buf_rd_ready() {
+                    regs.int_stat().write(|w| w.set_buf_rd_ready(true));
+                    break;
+                }
+            }
+
+            // Read data (PIO mode)
+            let data = buffer.as_mut_slice();
+            for i in 0..128 {
+                let word = regs.buf_data().read().0;
+                let offset = i * 4;
+                data[offset] = word as u8;
+                data[offset + 1] = (word >> 8) as u8;
+                data[offset + 2] = (word >> 16) as u8;
+                data[offset + 3] = (word >> 24) as u8;
+            }
+        }
+
+        // Wait for transfer complete
+        loop {
+            let status = regs.int_stat().read();
+            if status.xfer_complete() {
+                regs.int_stat().write(|w| w.set_xfer_complete(true));
+                break;
+            }
+            if status.data_tout_err() {
+                let _ = self.cmd(types::common_cmd::stop_transmission(), false);
+                return Err(Error::DataTimeout);
+            }
+        }
+
+        // CMD12: STOP_TRANSMISSION
+        self.cmd(types::common_cmd::stop_transmission(), false)?;
+
+        Ok(())
+    }
+
     /// Write a single 512-byte block
     pub fn write_block(&mut self, block_idx: u32, buffer: &DataBlock) -> Result<(), Error> {
         let card = self.card.as_ref().ok_or(Error::NoCard)?;
@@ -808,6 +932,126 @@ impl<'d> Sdxc<'d, Blocking> {
 
         Ok(())
     }
+
+    /// Write multiple 512-byte blocks
+    ///
+    /// Uses CMD25 (WRITE_MULTIPLE_BLOCK) followed by CMD12 (STOP_TRANSMISSION).
+    /// This is more efficient than calling `write_block` multiple times.
+    pub fn write_blocks(&mut self, block_idx: u32, buffers: &[DataBlock]) -> Result<(), Error> {
+        if buffers.is_empty() {
+            return Ok(());
+        }
+
+        // Use single block write for just one block
+        if buffers.len() == 1 {
+            return self.write_block(block_idx, &buffers[0]);
+        }
+
+        let card = self.card.as_ref().ok_or(Error::NoCard)?;
+        let regs = self.info.regs;
+
+        // Address conversion
+        let address = match card.card_type {
+            types::CardCapacity::StandardCapacity => block_idx * 512,
+            types::CardCapacity::HighCapacity => block_idx,
+            _ => block_idx,
+        };
+
+        let block_count = buffers.len() as u16;
+
+        // Configure multi-block transfer
+        regs.blk_attr().write(|w| {
+            w.set_xfer_block_size(512);
+            w.set_block_cnt(block_count);
+        });
+
+        // Clear status
+        regs.int_stat().write(|w| w.0 = 0xFFFFFFFF);
+
+        // CMD16: SET_BLOCKLEN
+        self.cmd(types::common_cmd::set_block_length(512), false)?;
+
+        // CMD25: WRITE_MULTIPLE_BLOCK
+        // Wait for CMD and DAT lines to be free
+        while regs.pstate().read().cmd_inhibit() {}
+        while regs.pstate().read().dat_inhibit() {}
+
+        // Set command argument first
+        regs.cmd_arg().write(|w| w.0 = address);
+
+        // Configure for multi-block data transfer
+        regs.cmd_xfer().write(|w| {
+            w.set_cmd_index(25);
+            w.set_resp_type_select(2); // R1
+            w.set_cmd_crc_chk_enable(true);
+            w.set_cmd_idx_chk_enable(true);
+            w.set_data_present_sel(true);
+            w.set_data_xfer_dir(false); // Write
+            w.set_multi_blk_sel(true);
+            w.set_block_count_enable(true);
+        });
+
+        // Wait for command complete
+        loop {
+            let status = regs.int_stat().read();
+            if status.cmd_complete() {
+                regs.int_stat().write(|w| w.set_cmd_complete(true));
+                break;
+            }
+            if status.cmd_tout_err() {
+                return Err(Error::Timeout);
+            }
+            if status.cmd_crc_err() {
+                return Err(Error::Crc);
+            }
+        }
+
+        // Write each block using PIO
+        for buffer in buffers.iter() {
+            // Wait for buffer ready
+            loop {
+                let status = regs.int_stat().read();
+                if status.data_tout_err() {
+                    // Try to send STOP command before returning error
+                    let _ = self.cmd(types::common_cmd::stop_transmission(), false);
+                    return Err(Error::DataTimeout);
+                }
+                if status.buf_wr_ready() {
+                    regs.int_stat().write(|w| w.set_buf_wr_ready(true));
+                    break;
+                }
+            }
+
+            // Write data (PIO mode)
+            let data = buffer.as_slice();
+            for i in 0..128 {
+                let offset = i * 4;
+                let word = (data[offset] as u32)
+                    | ((data[offset + 1] as u32) << 8)
+                    | ((data[offset + 2] as u32) << 16)
+                    | ((data[offset + 3] as u32) << 24);
+                regs.buf_data().write(|w| w.0 = word);
+            }
+        }
+
+        // Wait for transfer complete
+        loop {
+            let status = regs.int_stat().read();
+            if status.xfer_complete() {
+                regs.int_stat().write(|w| w.set_xfer_complete(true));
+                break;
+            }
+            if status.data_tout_err() {
+                let _ = self.cmd(types::common_cmd::stop_transmission(), false);
+                return Err(Error::DataTimeout);
+            }
+        }
+
+        // CMD12: STOP_TRANSMISSION
+        self.cmd(types::common_cmd::stop_transmission(), false)?;
+
+        Ok(())
+    }
 }
 
 // ============================================================================
@@ -861,3 +1105,114 @@ impl<'d, M: Mode> Drop for Sdxc<'d, M> {
         regs.sys_ctrl().modify(|w| w.set_sw_rst_all(true));
     }
 }
+
+// ============================================================================
+// embedded-sdmmc BlockDevice implementation
+// ============================================================================
+
+#[cfg(feature = "embedded-sdmmc")]
+mod sdmmc_impl {
+    use super::*;
+    use core::cell::RefCell;
+
+    /// Wrapper type for implementing `embedded_sdmmc::BlockDevice` trait.
+    ///
+    /// This wrapper provides interior mutability via `RefCell` to satisfy
+    /// the `&self` requirement of the `BlockDevice` trait while allowing
+    /// the underlying `Sdxc` driver to mutate its state.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use hpm_hal::sdxc::{Sdxc, SdCard, Config, DataBlock};
+    /// use embedded_sdmmc::{BlockDevice, VolumeManager, TimeSource};
+    ///
+    /// let sdxc = Sdxc::new_blocking_4bit(/* ... */);
+    /// sdxc.init_sd_card(Hertz::mhz(25)).unwrap();
+    ///
+    /// let sd_card = SdCard::new(sdxc);
+    /// // Now sd_card implements BlockDevice
+    /// ```
+    pub struct SdCard<'d> {
+        inner: RefCell<Sdxc<'d, Blocking>>,
+    }
+
+    impl<'d> SdCard<'d> {
+        /// Create a new SdCard wrapper from an initialized Sdxc driver.
+        ///
+        /// The Sdxc driver should already have `init_sd_card()` called.
+        pub fn new(sdxc: Sdxc<'d, Blocking>) -> Self {
+            Self {
+                inner: RefCell::new(sdxc),
+            }
+        }
+
+        /// Get a reference to the underlying Sdxc driver.
+        ///
+        /// # Panics
+        /// Panics if the driver is currently borrowed mutably.
+        pub fn inner(&self) -> core::cell::Ref<'_, Sdxc<'d, Blocking>> {
+            self.inner.borrow()
+        }
+
+        /// Get a mutable reference to the underlying Sdxc driver.
+        ///
+        /// # Panics
+        /// Panics if the driver is currently borrowed.
+        pub fn inner_mut(&self) -> core::cell::RefMut<'_, Sdxc<'d, Blocking>> {
+            self.inner.borrow_mut()
+        }
+
+        /// Consume the wrapper and return the underlying Sdxc driver.
+        pub fn into_inner(self) -> Sdxc<'d, Blocking> {
+            self.inner.into_inner()
+        }
+    }
+
+    impl embedded_sdmmc::BlockDevice for SdCard<'_> {
+        type Error = Error;
+
+        fn read(
+            &self,
+            blocks: &mut [embedded_sdmmc::Block],
+            start_block_idx: embedded_sdmmc::BlockIdx,
+        ) -> Result<(), Self::Error> {
+            let mut driver = self.inner.borrow_mut();
+
+            for (i, block) in blocks.iter_mut().enumerate() {
+                let idx = start_block_idx.0 + i as u32;
+                let mut data = DataBlock::new();
+                driver.read_block(idx, &mut data)?;
+                block.contents.copy_from_slice(data.as_slice());
+            }
+            Ok(())
+        }
+
+        fn write(
+            &self,
+            blocks: &[embedded_sdmmc::Block],
+            start_block_idx: embedded_sdmmc::BlockIdx,
+        ) -> Result<(), Self::Error> {
+            let mut driver = self.inner.borrow_mut();
+
+            for (i, block) in blocks.iter().enumerate() {
+                let idx = start_block_idx.0 + i as u32;
+                let data = DataBlock::from_slice(&block.contents);
+                driver.write_block(idx, &data)?;
+            }
+            Ok(())
+        }
+
+        fn num_blocks(&self) -> Result<embedded_sdmmc::BlockCount, Self::Error> {
+            let driver = self.inner.borrow();
+            let card = driver.card().ok_or(Error::NoCard)?;
+            // Calculate block count from CSD
+            // For SDHC/SDXC, CSD v2.0 uses C_SIZE directly
+            let block_count = card.csd.block_count();
+            Ok(embedded_sdmmc::BlockCount(block_count as u32))
+        }
+    }
+}
+
+#[cfg(feature = "embedded-sdmmc")]
+pub use sdmmc_impl::SdCard;
