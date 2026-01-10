@@ -415,6 +415,122 @@ impl<'d, M: Mode> Sdxc<'d, M> {
         }
     }
 
+    /// Send a data read command with DMA enabled (blocking)
+    fn cmd_dma<R: Resp>(&self, cmd: Cmd<R>) -> Result<(), Error> {
+        let regs = self.info.regs;
+
+        // Clear interrupt status
+        regs.int_stat().write(|w| w.0 = 0xFFFFFFFF);
+
+        // Wait for CMD and DAT lines to be free
+        while regs.pstate().read().cmd_inhibit() {}
+        while regs.pstate().read().dat_inhibit() {}
+
+        // Set command argument
+        regs.cmd_arg().write(|w| w.0 = cmd.arg);
+
+        // Build CMD_XFER with DMA enabled
+        let resp_len = cmd.response_len();
+        let resp_type_sel = get_resp_type_select(resp_len);
+
+        regs.cmd_xfer().write(|w| {
+            w.set_cmd_index(cmd.cmd);
+            w.set_resp_type_select(resp_type_sel);
+            w.set_cmd_crc_chk_enable(true);
+            w.set_cmd_idx_chk_enable(true);
+            w.set_data_present_sel(true);
+            w.set_data_xfer_dir(true); // Read
+            w.set_dma_enable(true); // Enable DMA
+        });
+
+        // Wait for command complete
+        let mut timeout_count = 0u32;
+        loop {
+            let status = regs.int_stat().read();
+
+            if status.cmd_complete() {
+                regs.int_stat().write(|w| w.set_cmd_complete(true));
+                return Ok(());
+            }
+
+            if status.cmd_tout_err() {
+                return Err(Error::Timeout);
+            }
+            if status.cmd_crc_err() {
+                return Err(Error::Crc);
+            }
+            if status.cmd_end_bit_err() {
+                return Err(Error::CmdEndBit);
+            }
+            if status.cmd_idx_err() {
+                return Err(Error::CmdIndex);
+            }
+
+            timeout_count += 1;
+            if timeout_count > 10_000_000 {
+                return Err(Error::SoftwareTimeout);
+            }
+        }
+    }
+
+    /// Send a data write command with DMA enabled (blocking)
+    fn cmd_dma_write<R: Resp>(&self, cmd: Cmd<R>) -> Result<(), Error> {
+        let regs = self.info.regs;
+
+        // Clear interrupt status
+        regs.int_stat().write(|w| w.0 = 0xFFFFFFFF);
+
+        // Wait for CMD and DAT lines to be free
+        while regs.pstate().read().cmd_inhibit() {}
+        while regs.pstate().read().dat_inhibit() {}
+
+        // Set command argument
+        regs.cmd_arg().write(|w| w.0 = cmd.arg);
+
+        // Build CMD_XFER with DMA enabled
+        let resp_len = cmd.response_len();
+        let resp_type_sel = get_resp_type_select(resp_len);
+
+        regs.cmd_xfer().write(|w| {
+            w.set_cmd_index(cmd.cmd);
+            w.set_resp_type_select(resp_type_sel);
+            w.set_cmd_crc_chk_enable(true);
+            w.set_cmd_idx_chk_enable(true);
+            w.set_data_present_sel(true);
+            w.set_data_xfer_dir(false); // Write
+            w.set_dma_enable(true); // Enable DMA
+        });
+
+        // Wait for command complete
+        let mut timeout_count = 0u32;
+        loop {
+            let status = regs.int_stat().read();
+
+            if status.cmd_complete() {
+                regs.int_stat().write(|w| w.set_cmd_complete(true));
+                return Ok(());
+            }
+
+            if status.cmd_tout_err() {
+                return Err(Error::Timeout);
+            }
+            if status.cmd_crc_err() {
+                return Err(Error::Crc);
+            }
+            if status.cmd_end_bit_err() {
+                return Err(Error::CmdEndBit);
+            }
+            if status.cmd_idx_err() {
+                return Err(Error::CmdIndex);
+            }
+
+            timeout_count += 1;
+            if timeout_count > 10_000_000 {
+                return Err(Error::SoftwareTimeout);
+            }
+        }
+    }
+
     /// Get 48-bit response
     fn get_response(&self) -> u32 {
         self.info.regs.resp(0).read().0
@@ -683,11 +799,13 @@ impl<'d> Sdxc<'d, Blocking> {
     }
 
     /// Read a single 512-byte block
+    ///
+    /// Note: Uses SDMA mode due to hardware errata E00033 (PIO mode unreliable).
     pub fn read_block(&mut self, block_idx: u32, buffer: &mut DataBlock) -> Result<(), Error> {
         let card = self.card.as_ref().ok_or(Error::NoCard)?;
         let regs = self.info.regs;
 
-        // Address conversion
+        // Address conversion: SDHC/SDXC use block address, SDSC uses byte address
         let address = match card.card_type {
             types::CardCapacity::StandardCapacity => block_idx * 512,
             types::CardCapacity::HighCapacity => block_idx,
@@ -703,13 +821,18 @@ impl<'d> Sdxc<'d, Blocking> {
         // Clear status
         regs.int_stat().write(|w| w.0 = 0xFFFFFFFF);
 
+        // Configure SDMA: set DMA type to SDMA (0) and set buffer address
+        // Due to errata E00033, PIO/FIFO mode is unreliable, must use DMA
+        regs.prot_ctrl().modify(|w| w.set_dma_sel(0)); // SDMA
+        regs.adma_sys_addr().write(|w| w.0 = buffer.0.as_ptr() as u32);
+
         // CMD16: SET_BLOCKLEN
         self.cmd(types::common_cmd::set_block_length(512), false)?;
 
-        // CMD17: READ_SINGLE_BLOCK
-        self.cmd(types::common_cmd::read_single_block(address), true)?;
+        // CMD17: READ_SINGLE_BLOCK with DMA enabled
+        self.cmd_dma(types::common_cmd::read_single_block(address))?;
 
-        // Wait for buffer ready
+        // Wait for transfer complete
         loop {
             let status = regs.int_stat().read();
             if status.data_tout_err() {
@@ -718,26 +841,6 @@ impl<'d> Sdxc<'d, Blocking> {
             if status.data_crc_err() {
                 return Err(Error::DataCrc);
             }
-            if status.buf_rd_ready() {
-                regs.int_stat().write(|w| w.set_buf_rd_ready(true));
-                break;
-            }
-        }
-
-        // Read data (PIO mode)
-        let data = buffer.as_mut_slice();
-        for i in 0..128 {
-            let word = regs.buf_data().read().0;
-            let offset = i * 4;
-            data[offset] = word as u8;
-            data[offset + 1] = (word >> 8) as u8;
-            data[offset + 2] = (word >> 16) as u8;
-            data[offset + 3] = (word >> 24) as u8;
-        }
-
-        // Wait for transfer complete
-        loop {
-            let status = regs.int_stat().read();
             if status.xfer_complete() {
                 regs.int_stat().write(|w| w.set_xfer_complete(true));
                 break;
@@ -872,11 +975,13 @@ impl<'d> Sdxc<'d, Blocking> {
     }
 
     /// Write a single 512-byte block
+    ///
+    /// Note: Uses SDMA mode due to hardware errata E00033 (PIO mode unreliable).
     pub fn write_block(&mut self, block_idx: u32, buffer: &DataBlock) -> Result<(), Error> {
         let card = self.card.as_ref().ok_or(Error::NoCard)?;
         let regs = self.info.regs;
 
-        // Address conversion
+        // Address conversion: SDHC/SDXC use block address, SDSC uses byte address
         let address = match card.card_type {
             types::CardCapacity::StandardCapacity => block_idx * 512,
             types::CardCapacity::HighCapacity => block_idx,
@@ -892,38 +997,26 @@ impl<'d> Sdxc<'d, Blocking> {
         // Clear status
         regs.int_stat().write(|w| w.0 = 0xFFFFFFFF);
 
+        // Configure SDMA: set DMA type to SDMA (0) and set buffer address
+        // Due to errata E00033, PIO/FIFO mode is unreliable, must use DMA
+        regs.prot_ctrl().modify(|w| w.set_dma_sel(0)); // SDMA
+        regs.adma_sys_addr().write(|w| w.0 = buffer.0.as_ptr() as u32);
+
         // CMD16: SET_BLOCKLEN
         self.cmd(types::common_cmd::set_block_length(512), false)?;
 
-        // CMD24: WRITE_SINGLE_BLOCK
-        self.cmd(types::common_cmd::write_single_block(address), true)?;
+        // CMD24: WRITE_SINGLE_BLOCK with DMA enabled
+        self.cmd_dma_write(types::common_cmd::write_single_block(address))?;
 
-        // Wait for buffer ready
+        // Wait for transfer complete
         loop {
             let status = regs.int_stat().read();
             if status.data_tout_err() {
                 return Err(Error::DataTimeout);
             }
-            if status.buf_wr_ready() {
-                regs.int_stat().write(|w| w.set_buf_wr_ready(true));
-                break;
+            if status.data_crc_err() {
+                return Err(Error::DataCrc);
             }
-        }
-
-        // Write data (PIO mode)
-        let data = buffer.as_slice();
-        for i in 0..128 {
-            let offset = i * 4;
-            let word = (data[offset] as u32)
-                | ((data[offset + 1] as u32) << 8)
-                | ((data[offset + 2] as u32) << 16)
-                | ((data[offset + 3] as u32) << 24);
-            regs.buf_data().write(|w| w.0 = word);
-        }
-
-        // Wait for transfer complete
-        loop {
-            let status = regs.int_stat().read();
             if status.xfer_complete() {
                 regs.int_stat().write(|w| w.set_xfer_complete(true));
                 break;
