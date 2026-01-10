@@ -234,10 +234,6 @@ impl<'d, M: Mode> Sdxc<'d, M> {
         let state = T::state();
         let regs = info.regs;
 
-        // HPM63xx specific: Configure MISC_CTRL0 first
-        #[cfg(sdxc_v63)]
-        regs.misc_ctrl0().modify(|w| w.set_cardclk_inv_en(false));
-
         // Disable SD clock during configuration
         regs.sys_ctrl().modify(|w| w.set_sd_clk_en(false));
 
@@ -245,9 +241,34 @@ impl<'d, M: Mode> Sdxc<'d, M> {
         regs.sys_ctrl().modify(|w| w.set_sw_rst_all(true));
         while regs.sys_ctrl().read().sw_rst_all() {}
 
-        // Enable timeout clock (HPM63xx specific)
-        #[cfg(sdxc_v63)]
-        regs.misc_ctrl0().modify(|w| w.set_tmclk_en(true));
+        // === Post-reset configuration (order matters!) ===
+
+        // HPM63xx/HPM68xx specific: Configure MISC_CTRL0
+        #[cfg(any(sdxc_v63, sdxc_v68))]
+        {
+            regs.misc_ctrl0().modify(|w| w.set_cardclk_inv_en(false));
+            regs.misc_ctrl0().modify(|w| w.set_tmclk_en(true));
+        }
+
+        // HPM67xx specific: Configure CONCTL for SDXC (MUST be after reset!)
+        // Enable TM clock via CONCTL->CTRL4/CTRL5 bit 10 (undocumented in yaml)
+        #[cfg(sdxc_v67)]
+        {
+            let conctl = crate::pac::CONCTL;
+            // SDXC0 uses CTRL4 (0xf2030000), SDXC1 uses CTRL5
+            // Set bit 10 to enable TM clock, clear bit 28 (cardclk_inv_en)
+            if info.regs.as_ptr() as u32 == 0xf203_0000 {
+                conctl.ctrl4().modify(|w| {
+                    w.0 |= 1 << 10;      // Enable TM clock
+                    w.0 &= !(1 << 28);   // Disable card clock invert
+                });
+            } else {
+                conctl.ctrl5().modify(|w| {
+                    w.0 |= 1 << 10;      // Enable TM clock
+                    w.0 &= !(1 << 28);   // Disable card clock invert
+                });
+            }
+        }
 
         // Configure timeout
         regs.sys_ctrl().modify(|w| w.set_tout_cnt(0x0E));
@@ -313,9 +334,9 @@ impl<'d, M: Mode> Sdxc<'d, M> {
         regs.sys_ctrl().modify(|w| w.set_sd_clk_en(false));
 
         // Set divider - different approach for different SDXC versions
-        #[cfg(sdxc_v63)]
+        #[cfg(any(sdxc_v63, sdxc_v68))]
         {
-            // HPM63xx: Use MISC_CTRL0 software divider
+            // HPM63xx/HPM68xx: Use MISC_CTRL0 software divider
             regs.misc_ctrl0().modify(|w| {
                 w.set_freq_sel_sw(divider);
                 w.set_freq_sel_sw_en(true);
@@ -355,9 +376,9 @@ impl<'d, M: Mode> Sdxc<'d, M> {
         regs.sys_ctrl().modify(|w| w.set_sd_clk_en(true));
         while !regs.sys_ctrl().read().sd_clk_en() {}
 
-        #[cfg(sdxc_v63)]
+        #[cfg(any(sdxc_v63, sdxc_v68))]
         {
-            // HPM63xx: Use hardware CARD_ACTIVE bit
+            // HPM63xx/HPM68xx: Use hardware CARD_ACTIVE bit
             regs.misc_ctrl1().modify(|w| w.set_card_active(true));
             while regs.misc_ctrl1().read().card_active() {}
         }
