@@ -4,7 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-hpm-hal = { path = "../..", features = ["rt", "embassy", "hpm6360", "defmt"] }
+hpm-hal = { path = "../..", features = ["rt", "embassy", "hpm6360", "defmt", "embedded-sdmmc"] }
+embedded-sdmmc = "0.9"
 
 defmt = "0.3.8"
 defmt-rtt = "0.4.1"
