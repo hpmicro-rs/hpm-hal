@@ -210,6 +210,7 @@ pub(crate) unsafe fn init(config: Config) {
     clock_add_to_group(pac::resources::CPU0_CORE, 0);
     clock_add_to_group(pac::resources::AHBAPB_BUS, 0);
     clock_add_to_group(pac::resources::AXI_BUS, 0);
+    clock_add_to_group(pac::resources::CONN_BUS, 0); // Required for CONCTL access
     clock_add_to_group(pac::resources::AXI_SRAM0, 0);
     clock_add_to_group(pac::resources::AXI_SRAM1, 0);
 
