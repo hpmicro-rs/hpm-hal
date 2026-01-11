@@ -16,14 +16,14 @@ license = "MIT/Apache-2.0"
 # local-development
 # hpm-metapac = { path = "../hpm-data/build/hpm-metapac" }
 # git snapshot
-hpm-metapac = { git = "https://github.com/hpmicro-rs/hpm-metapac.git", tag = "hpm-data-4d223d915eb02e1ace5bb0e00ba297c1a040e52a" }
+hpm-metapac = { git = "https://github.com/hpmicro-rs/hpm-metapac.git", tag = "hpm-data-a80e1db10a2b151c19369c2b3a933f88b7d85b2f" }
 
-# hpm-riscv-rt = { path = "../hpm-riscv-rt", optional = true }
-hpm-riscv-rt = { version = "0.3.0", optional = true }
-andes-riscv = { version = "0.1.1" }
+hpm-riscv-rt = { path = "../hpm-riscv-rt", optional = true }
+# hpm-riscv-rt = { version = "0.3.2", optional = true }
+andes-riscv = { version = "0.1.3" }
 
-riscv = { version = "0.15.0", features = ["critical-section-single-hart"] }
-riscv-pac = "0.2.0"
+riscv = { version = "0.16.0", features = ["critical-section-single-hart"] }
+riscv-pac = "0.3.0"
 
 embedded-hal = { version = "1.0.0" }
 embassy-time-driver = { version = "0.2.1", features = [
@@ -55,7 +55,7 @@ embedded-sdmmc = { version = "0.9", optional = true }
 
 [build-dependencies]
 # hpm-metapac = { path = "../hpm-data/build/hpm-metapac", default-features = false, features = ["metadata"] }
-hpm-metapac = { git = "https://github.com/hpmicro-rs/hpm-metapac.git", tag = "hpm-data-4d223d915eb02e1ace5bb0e00ba297c1a040e52a", default-features = false, features = ["metadata"] }
+hpm-metapac = { git = "https://github.com/hpmicro-rs/hpm-metapac.git", tag = "hpm-data-a80e1db10a2b151c19369c2b3a933f88b7d85b2f", default-features = false, features = ["metadata"] }
 
 proc-macro2 = "1.0.92"
 quote = "1.0.37"
@@ -76,35 +76,46 @@ time-driver-gptmr1 = []
 mcan = ["dep:mcan"]
 chrono = ["dep:chrono"]
 
+# HPM5300 series - No NONCACHEABLE_RAM, no PMA needed
 hpm5301 = ["hpm-metapac/hpm5301"]
 hpm5321 = ["hpm-metapac/hpm5321", "mcan"]
 hpm5331 = ["hpm-metapac/hpm5331"]
 hpm5361 = ["hpm-metapac/hpm5361", "mcan"]
-hpm6220 = ["hpm-metapac/hpm6220"]
-hpm6240 = ["hpm-metapac/hpm6240", "mcan"]
-hpm6260 = ["hpm-metapac/hpm6260", "mcan"]
-hpm6264 = ["hpm-metapac/hpm6264", "mcan"]
-hpm6280 = ["hpm-metapac/hpm6280", "mcan"]
-hpm6284 = ["hpm-metapac/hpm6284", "mcan"]
-hpm6320 = ["hpm-metapac/hpm6320"]
-hpm6330 = ["hpm-metapac/hpm6330"]
-hpm6340 = ["hpm-metapac/hpm6340"]
-hpm6350 = ["hpm-metapac/hpm6350"]
-hpm6360 = ["hpm-metapac/hpm6360"]
-hpm6364 = ["hpm-metapac/hpm6364"]
-hpm6420 = ["hpm-metapac/hpm6420", "hpm-riscv-rt/hpm67-fix"]
-hpm6430 = ["hpm-metapac/hpm6430", "hpm-riscv-rt/hpm67-fix"]
-hpm6450 = ["hpm-metapac/hpm6450", "hpm-riscv-rt/hpm67-fix"]
-hpm6454 = ["hpm-metapac/hpm6454", "hpm-riscv-rt/hpm67-fix"]
-hpm64a0 = ["hpm-metapac/hpm64a0", "hpm-riscv-rt/hpm67-fix"]
-hpm64g0 = ["hpm-metapac/hpm64g0", "hpm-riscv-rt/hpm67-fix"]
-hpm6730 = ["hpm-metapac/hpm6730", "hpm-riscv-rt/hpm67-fix"]
-hpm6750 = ["hpm-metapac/hpm6750", "hpm-riscv-rt/hpm67-fix"]
-hpm6754 = ["hpm-metapac/hpm6754", "hpm-riscv-rt/hpm67-fix"]
-hpm6830 = ["hpm-metapac/hpm6830", "mcan"]
-hpm6850 = ["hpm-metapac/hpm6850", "mcan"]
-hpm6880 = ["hpm-metapac/hpm6880", "mcan"]
-hpm6e50 = ["hpm-metapac/hpm6e50", "mcan"]
-hpm6e60 = ["hpm-metapac/hpm6e60", "mcan"]
-hpm6e70 = ["hpm-metapac/hpm6e70", "mcan"]
-hpm6e80 = ["hpm-metapac/hpm6e80", "mcan"]
+
+# HPM6200 series - PMA noncacheable
+hpm6220 = ["hpm-metapac/hpm6220", "hpm-riscv-rt/pma-noncacheable"]
+hpm6240 = ["hpm-metapac/hpm6240", "mcan", "hpm-riscv-rt/pma-noncacheable"]
+hpm6260 = ["hpm-metapac/hpm6260", "mcan", "hpm-riscv-rt/pma-noncacheable"]
+hpm6264 = ["hpm-metapac/hpm6264", "mcan", "hpm-riscv-rt/pma-noncacheable"]
+hpm6280 = ["hpm-metapac/hpm6280", "mcan", "hpm-riscv-rt/pma-noncacheable"]
+hpm6284 = ["hpm-metapac/hpm6284", "mcan", "hpm-riscv-rt/pma-noncacheable"]
+
+# HPM6300 series - PMA noncacheable
+hpm6320 = ["hpm-metapac/hpm6320", "hpm-riscv-rt/pma-noncacheable"]
+hpm6330 = ["hpm-metapac/hpm6330", "hpm-riscv-rt/pma-noncacheable"]
+hpm6340 = ["hpm-metapac/hpm6340", "hpm-riscv-rt/pma-noncacheable"]
+hpm6350 = ["hpm-metapac/hpm6350", "hpm-riscv-rt/pma-noncacheable"]
+hpm6360 = ["hpm-metapac/hpm6360", "hpm-riscv-rt/pma-noncacheable"]
+hpm6364 = ["hpm-metapac/hpm6364", "hpm-riscv-rt/pma-noncacheable"]
+
+# HPM6400/6700 series - hpm67-fix (includes RTT fix) + PMA noncacheable
+hpm6420 = ["hpm-metapac/hpm6420", "hpm-riscv-rt/hpm67-fix", "hpm-riscv-rt/pma-noncacheable"]
+hpm6430 = ["hpm-metapac/hpm6430", "hpm-riscv-rt/hpm67-fix", "hpm-riscv-rt/pma-noncacheable"]
+hpm6450 = ["hpm-metapac/hpm6450", "hpm-riscv-rt/hpm67-fix", "hpm-riscv-rt/pma-noncacheable"]
+hpm6454 = ["hpm-metapac/hpm6454", "hpm-riscv-rt/hpm67-fix", "hpm-riscv-rt/pma-noncacheable"]
+hpm64a0 = ["hpm-metapac/hpm64a0", "hpm-riscv-rt/hpm67-fix", "hpm-riscv-rt/pma-noncacheable"]
+hpm64g0 = ["hpm-metapac/hpm64g0", "hpm-riscv-rt/hpm67-fix", "hpm-riscv-rt/pma-noncacheable"]
+hpm6730 = ["hpm-metapac/hpm6730", "hpm-riscv-rt/hpm67-fix", "hpm-riscv-rt/pma-noncacheable"]
+hpm6750 = ["hpm-metapac/hpm6750", "hpm-riscv-rt/hpm67-fix", "hpm-riscv-rt/pma-noncacheable"]
+hpm6754 = ["hpm-metapac/hpm6754", "hpm-riscv-rt/hpm67-fix", "hpm-riscv-rt/pma-noncacheable"]
+
+# HPM6800 series - PMA noncacheable
+hpm6830 = ["hpm-metapac/hpm6830", "mcan", "hpm-riscv-rt/pma-noncacheable"]
+hpm6850 = ["hpm-metapac/hpm6850", "mcan", "hpm-riscv-rt/pma-noncacheable"]
+hpm6880 = ["hpm-metapac/hpm6880", "mcan", "hpm-riscv-rt/pma-noncacheable"]
+
+# HPM6E series - PMA noncacheable
+hpm6e50 = ["hpm-metapac/hpm6e50", "mcan", "hpm-riscv-rt/pma-noncacheable"]
+hpm6e60 = ["hpm-metapac/hpm6e60", "mcan", "hpm-riscv-rt/pma-noncacheable"]
+hpm6e70 = ["hpm-metapac/hpm6e70", "mcan", "hpm-riscv-rt/pma-noncacheable"]
+hpm6e80 = ["hpm-metapac/hpm6e80", "mcan", "hpm-riscv-rt/pma-noncacheable"]
