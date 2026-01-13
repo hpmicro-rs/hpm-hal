@@ -235,7 +235,11 @@ impl<'d> Spi<'d, Blocking> {
         T::add_resource_group(0);
 
         mosi.set_as_alt(mosi.alt_num());
-        miso.set_as_alt(miso.alt_num());
+        // MISO needs loop_back (input enable) to read data from the pin
+        miso.ioc_pad().func_ctl().modify(|w| {
+            w.set_alt_select(miso.alt_num());
+            w.set_loop_back(true);
+        });
         sclk.ioc_pad().func_ctl().modify(|w| {
             w.set_alt_select(sclk.alt_num());
             w.set_loop_back(true);
@@ -290,7 +294,11 @@ impl<'d> Spi<'d, Blocking> {
     ) -> Self {
         T::add_resource_group(0);
 
-        miso.set_as_alt(miso.alt_num());
+        // MISO needs loop_back (input enable) to read data from the pin
+        miso.ioc_pad().func_ctl().modify(|w| {
+            w.set_alt_select(miso.alt_num());
+            w.set_loop_back(true);
+        });
         sclk.ioc_pad().func_ctl().modify(|w| {
             w.set_alt_select(sclk.alt_num());
             w.set_loop_back(true);
@@ -364,7 +372,11 @@ impl<'d> Spi<'d, Blocking> {
 
         cs.set_as_alt(cs.alt_num());
         mosi.set_as_alt(mosi.alt_num());
-        miso.set_as_alt(miso.alt_num());
+        // MISO needs loop_back (input enable) to read data from the pin
+        miso.ioc_pad().func_ctl().modify(|w| {
+            w.set_alt_select(miso.alt_num());
+            w.set_loop_back(true);
+        });
         sclk.ioc_pad().func_ctl().modify(|w| {
             w.set_alt_select(sclk.alt_num());
             w.set_loop_back(true);
@@ -406,7 +418,11 @@ impl<'d> Spi<'d, Async> {
         T::add_resource_group(0);
 
         mosi.set_as_alt(mosi.alt_num());
-        miso.set_as_alt(miso.alt_num());
+        // MISO needs loop_back (input enable) to read data from the pin
+        miso.ioc_pad().func_ctl().modify(|w| {
+            w.set_alt_select(miso.alt_num());
+            w.set_loop_back(true);
+        });
         sclk.ioc_pad().func_ctl().modify(|w| {
             w.set_alt_select(sclk.alt_num());
             w.set_loop_back(true);
@@ -465,7 +481,11 @@ impl<'d> Spi<'d, Async> {
     ) -> Self {
         T::add_resource_group(0);
 
-        miso.set_as_alt(miso.alt_num());
+        // MISO needs loop_back (input enable) to read data from the pin
+        miso.ioc_pad().func_ctl().modify(|w| {
+            w.set_alt_select(miso.alt_num());
+            w.set_loop_back(true);
+        });
         sclk.ioc_pad().func_ctl().modify(|w| {
             w.set_alt_select(sclk.alt_num());
             w.set_loop_back(true);
@@ -544,17 +564,23 @@ impl<'d> Spi<'d, Async> {
         }
 
         let r = self.info.regs;
+        let config = TransferConfig::default();
 
         self.set_word_size(W::CONFIG);
 
-        self.configure_transfer(data.len(), 0, &TransferConfig::default())?;
+        self.configure_transfer(data.len(), 0, &config)?;
 
         r.ctrl().modify(|w| w.set_txdmaen(true));
 
         let tx_dst = r.data().as_ptr() as *mut W;
         let mut opts = dma::TransferOptions::default();
-        opts.burst = dma::Burst::from_size(FIFO_SIZE / 2);
+        // In DMA handshake mode, burst size must be 1 transfer (0).
+        // See HPM SDK: "In DMA handshake case, source burst size must be 1 transfer, that is 0."
+        opts.burst = dma::Burst::Exponential(0);
         let tx_f = unsafe { self.tx_dma.as_mut().unwrap().write(data, tx_dst, opts) };
+
+        // Write CMD to trigger transfer start (required for HPM SPI controller)
+        r.cmd().write(|w| w.set_cmd(config.cmd.unwrap_or(0xff)));
 
         tx_f.await;
 
@@ -587,6 +613,9 @@ impl<'d> Spi<'d, Async> {
 
         r.ctrl().modify(|w| w.set_rxdmaen(true));
 
+        // Write CMD to trigger transfer start (required for HPM SPI controller)
+        r.cmd().write(|w| w.set_cmd(config.cmd.unwrap_or(0xff)));
+
         rx_f.await;
 
         r.ctrl().modify(|w| w.set_rxdmaen(false));
@@ -615,11 +644,16 @@ impl<'d> Spi<'d, Async> {
 
         let tx_dst = r.data().as_ptr() as *mut W;
         let mut opts = dma::TransferOptions::default();
-        opts.burst = dma::Burst::from_size(FIFO_SIZE / 2);
+        // In DMA handshake mode, burst size must be 1 transfer (0).
+        // See HPM SDK: "In DMA handshake case, source burst size must be 1 transfer, that is 0."
+        opts.burst = dma::Burst::Exponential(0);
         let tx_f = unsafe { self.tx_dma.as_mut().unwrap().write_raw(write, tx_dst, opts) };
 
         let rx_src = r.data().as_ptr() as *mut W;
-        let rx_f = unsafe { self.rx_dma.as_mut().unwrap().read_raw(rx_src, read, Default::default()) };
+        let rx_f = unsafe { self.rx_dma.as_mut().unwrap().read_raw(rx_src, read, opts) };
+
+        // Write CMD to trigger transfer start (required for HPM SPI controller)
+        r.cmd().write(|w| w.set_cmd(config.cmd.unwrap_or(0xff)));
 
         join(tx_f, rx_f).await;
 
@@ -723,8 +757,10 @@ impl<'d, M: PeriMode> Spi<'d, M> {
         });
 
         // Set default format
-        let cpol = config.mode.phase == embedded_hal::spi::Phase::CaptureOnSecondTransition;
-        let cpha = config.mode.polarity == embedded_hal::spi::Polarity::IdleHigh;
+        // CPOL: clock polarity (idle state) - CPOL=1 means idle high
+        // CPHA: clock phase (capture edge) - CPHA=1 means capture on second transition
+        let cpol = config.mode.polarity == embedded_hal::spi::Polarity::IdleHigh;
+        let cpha = config.mode.phase == embedded_hal::spi::Phase::CaptureOnSecondTransition;
 
         r.trans_fmt().write(|w| {
             // addrlen is set in transfer config, not here
@@ -841,16 +877,18 @@ impl<'d, M: PeriMode> Spi<'d, M> {
             // CS is handled by SpiDevice trait
         });
 
+        // Wait for reset to complete (hardware clears the bits when done)
+        while r.ctrl().read().txfiforst() || r.ctrl().read().rxfiforst() || r.ctrl().read().spirst() {}
+
         // Read SPI control mode
         let slave_mode = r.trans_fmt().read().slvmode();
 
-        // Write addr and cmd only in master mode
+        // Write addr only in master mode
+        // Note: CMD write is moved to blocking_transfer to allow preloading TX FIFO first
         if !slave_mode {
             if let Some(addr) = config.addr {
                 r.addr().write(|w| w.set_addr(addr));
             }
-            // Write cmd
-            r.cmd().write(|w| w.set_cmd(config.cmd.unwrap_or(0xff)));
         }
         Ok(())
     }
@@ -870,9 +908,41 @@ impl<'d, M: PeriMode> Spi<'d, M> {
         });
         self.set_word_size(<u8 as SealedWord>::CONFIG);
         self.configure_transfer(data.len(), 0, config)?;
-        for chunk in data.chunks(4) {
+
+        let mut chunks = data.chunks(4);
+        let mut preloaded = 0;
+
+        // Preload TX FIFO before triggering transfer
+        while preloaded < FIFO_SIZE {
+            if let Some(chunk) = chunks.next() {
+                let word = match chunk.len() {
+                    4 => u32::from_le_bytes(chunk.try_into().unwrap()),
+                    3 => u32::from_be_bytes([0, chunk[2], chunk[1], chunk[0]]),
+                    2 => u32::from_be_bytes([0, 0, chunk[1], chunk[0]]),
+                    1 => u32::from_be_bytes([0, 0, 0, chunk[0]]),
+                    _ => unreachable!(),
+                };
+
+                if r.status().read().txfull() {
+                    // Put chunk back for later processing
+                    break;
+                }
+                unsafe {
+                    ptr::write_volatile(r.data().as_ptr() as *mut u32, word);
+                }
+                preloaded += 1;
+            } else {
+                break;
+            }
+        }
+
+        // Write CMD to trigger transfer start
+        r.cmd().write(|w| w.set_cmd(config.cmd.unwrap_or(0xff)));
+
+        // Write remaining data
+        for chunk in chunks {
             let word = match chunk.len() {
-                4 => u32::from_le_bytes(chunk.try_into().unwrap()), // LSB send first
+                4 => u32::from_le_bytes(chunk.try_into().unwrap()),
                 3 => u32::from_be_bytes([0, chunk[2], chunk[1], chunk[0]]),
                 2 => u32::from_be_bytes([0, 0, chunk[1], chunk[0]]),
                 1 => u32::from_be_bytes([0, 0, 0, chunk[0]]),
@@ -905,12 +975,29 @@ impl<'d, M: PeriMode> Spi<'d, M> {
         self.configure_transfer(data.len(), 0, &config)?;
         self.set_word_size(W::CONFIG);
 
-        // Write data byte by byte
-        for b in data {
+        let mut i = 0;
+
+        // Preload TX FIFO before triggering transfer
+        while i < data.len() && i < FIFO_SIZE {
+            let status = r.status().read();
+            if !status.txfull() {
+                unsafe { ptr::write_volatile(r.data().as_ptr() as *mut W, data[i]) };
+                i += 1;
+            } else {
+                break;
+            }
+        }
+
+        // Write CMD to trigger transfer start
+        r.cmd().write(|w| w.set_cmd(config.cmd.unwrap_or(0xff)));
+
+        // Write remaining data
+        while i < data.len() {
             while r.status().read().txfull() {}
             unsafe {
-                ptr::write_volatile(r.data().as_ptr() as *mut W, *b);
+                ptr::write_volatile(r.data().as_ptr() as *mut W, data[i]);
             }
+            i += 1;
         }
 
         // must wait tx finished, then gpio cs can be changed after function return
@@ -930,6 +1017,9 @@ impl<'d, M: PeriMode> Spi<'d, M> {
 
         self.configure_transfer(0, data.len(), &config)?;
         self.set_word_size(W::CONFIG);
+
+        // Write CMD to trigger transfer start
+        r.cmd().write(|w| w.set_cmd(config.cmd.unwrap_or(0xff)));
 
         for b in data {
             // while r.status().read().rxempty() {}
@@ -955,19 +1045,55 @@ impl<'d, M: PeriMode> Spi<'d, M> {
         let mut i = 0;
         let mut j = 0;
 
-        while i < write.len() || j < read.len() {
+        // Preload TX FIFO before triggering transfer (fill up to FIFO_SIZE)
+        while i < write.len() && i < FIFO_SIZE {
+            let status = r.status().read();
+            if !status.txfull() {
+                unsafe { ptr::write_volatile(r.data().as_ptr() as *mut W, write[i]) };
+                i += 1;
+            } else {
+                break;
+            }
+        }
+
+        // Write CMD to trigger transfer start (dummy 0xff when cmd is None)
+        r.cmd().write(|w| w.set_cmd(config.cmd.unwrap_or(0xff)));
+
+        // Continue transfer: write remaining data and read all data
+        // Keep looping until all TX is sent and all RX is received
+        loop {
             let status = r.status().read();
 
+            // Write to TX FIFO if not full and we have more data
             if i < write.len() && !status.txfull() {
                 unsafe { ptr::write_volatile(r.data().as_ptr() as *mut W, write[i]) };
                 i += 1;
             }
 
+            // Read from RX FIFO if not empty and we need more data
             if j < read.len() && !status.rxempty() {
                 read[j] = unsafe { ptr::read_volatile(r.data().as_ptr() as *const W) };
                 j += 1;
             }
+
+            // Exit when all data is transferred
+            if i >= write.len() && j >= read.len() {
+                break;
+            }
+
+            // Also exit if transfer is complete (safety check)
+            if !status.spiactive() && i >= write.len() {
+                // Transfer done, drain remaining RX
+                while j < read.len() && !r.status().read().rxempty() {
+                    read[j] = unsafe { ptr::read_volatile(r.data().as_ptr() as *const W) };
+                    j += 1;
+                }
+                break;
+            }
         }
+
+        // Wait for transfer to fully complete
+        while r.status().read().spiactive() {}
 
         Ok(())
     }
@@ -987,7 +1113,22 @@ impl<'d, M: PeriMode> Spi<'d, M> {
         let mut j = 0;
         let len = words.len();
 
-        while i < len || j < len {
+        // Preload TX FIFO before triggering transfer (fill up to FIFO_SIZE)
+        while i < len && i < FIFO_SIZE {
+            let status = r.status().read();
+            if !status.txfull() {
+                unsafe { ptr::write_volatile(r.data().as_ptr() as *mut W, words[i]) };
+                i += 1;
+            } else {
+                break;
+            }
+        }
+
+        // Write CMD to trigger transfer start (dummy 0xff when cmd is None)
+        r.cmd().write(|w| w.set_cmd(config.cmd.unwrap_or(0xff)));
+
+        // Continue transfer: write remaining data and read all data
+        loop {
             let status = r.status().read();
 
             if i < len && !status.txfull() {
@@ -999,7 +1140,25 @@ impl<'d, M: PeriMode> Spi<'d, M> {
                 words[j] = unsafe { ptr::read_volatile(r.data().as_ptr() as *const W) };
                 j += 1;
             }
+
+            // Exit when all data is transferred
+            if i >= len && j >= len {
+                break;
+            }
+
+            // Also exit if transfer is complete (safety check)
+            if !status.spiactive() && i >= len {
+                // Transfer done, drain remaining RX
+                while j < len && !r.status().read().rxempty() {
+                    words[j] = unsafe { ptr::read_volatile(r.data().as_ptr() as *const W) };
+                    j += 1;
+                }
+                break;
+            }
         }
+
+        // Wait for transfer to fully complete
+        while r.status().read().spiactive() {}
 
         Ok(())
     }
@@ -1160,7 +1319,8 @@ impl<'d, M: PeriMode> embedded_hal::spi::SpiBus for Spi<'d, M> {
 
     fn transfer(&mut self, read: &mut [u8], write: &[u8]) -> Result<(), Self::Error> {
         let config = TransferConfig {
-            transfer_mode: TransMode::WRITE_READ,
+            transfer_mode: TransMode::WRITE_READ_TOGETHER,
+            dummy_cnt: 2, // SDK default
             ..Default::default()
         };
         self.blocking_transfer(read, write, &config)
@@ -1168,7 +1328,8 @@ impl<'d, M: PeriMode> embedded_hal::spi::SpiBus for Spi<'d, M> {
 
     fn transfer_in_place(&mut self, words: &mut [u8]) -> Result<(), Self::Error> {
         let config = TransferConfig {
-            transfer_mode: TransMode::WRITE_READ,
+            transfer_mode: TransMode::WRITE_READ_TOGETHER,
+            dummy_cnt: 2, // SDK default
             ..Default::default()
         };
         self.blocking_transfer_inplace(words, &config)
