@@ -637,25 +637,50 @@ impl<'d> Spi<'d, Async> {
         self.set_word_size(W::CONFIG);
         self.configure_transfer(write.len(), read.len(), config)?;
 
-        r.ctrl().modify(|w| {
-            w.set_rxdmaen(true);
-            w.set_txdmaen(true);
-        });
+        // IMPORTANT: Cache coherency for DMA transfers
+        // TX buffer: writeback cache to ensure DMA reads correct data from memory
+        // RX buffer: invalidate cache so CPU reads fresh data written by DMA
+        let tx_addr = write as *const () as u32;
+        let tx_size = (write.len() * core::mem::size_of::<W>()) as u32;
+        let rx_addr = read as *mut () as u32;
+        let rx_size = (read.len() * core::mem::size_of::<W>()) as u32;
+        
+        // Writeback TX buffer before DMA reads it
+        let tx_aligned_start = andes_riscv::l1c::cacheline_align_down(tx_addr);
+        let tx_aligned_size = andes_riscv::l1c::cacheline_align_up(tx_size + (tx_addr - tx_aligned_start));
+        unsafe { andes_riscv::l1c::dc_writeback(tx_aligned_start, tx_aligned_size); }
+        
+        // Invalidate RX buffer before DMA writes it (avoid stale cache)
+        let rx_aligned_start = andes_riscv::l1c::cacheline_align_down(rx_addr);
+        let rx_aligned_size = andes_riscv::l1c::cacheline_align_up(rx_size + (rx_addr - rx_aligned_start));
+        unsafe { andes_riscv::l1c::dc_invalidate(rx_aligned_start, rx_aligned_size); }
 
+        // IMPORTANT: Configure DMA BEFORE enabling SPI DMA requests
+        // This matches HPM SDK's order: dma_setup_handshake() -> spi_enable_tx/rx_dma()
         let tx_dst = r.data().as_ptr() as *mut W;
         let mut opts = dma::TransferOptions::default();
         // In DMA handshake mode, burst size must be 1 transfer (0).
         // See HPM SDK: "In DMA handshake case, source burst size must be 1 transfer, that is 0."
         opts.burst = dma::Burst::Exponential(0);
+
         let tx_f = unsafe { self.tx_dma.as_mut().unwrap().write_raw(write, tx_dst, opts) };
 
         let rx_src = r.data().as_ptr() as *mut W;
         let rx_f = unsafe { self.rx_dma.as_mut().unwrap().read_raw(rx_src, read, opts) };
 
+        // Now enable SPI DMA requests (after DMA is configured and ready)
+        r.ctrl().modify(|w| {
+            w.set_rxdmaen(true);
+            w.set_txdmaen(true);
+        });
+
         // Write CMD to trigger transfer start (required for HPM SPI controller)
         r.cmd().write(|w| w.set_cmd(config.cmd.unwrap_or(0xff)));
 
         join(tx_f, rx_f).await;
+        
+        // Invalidate RX buffer again after DMA completes to ensure CPU sees DMA-written data
+        unsafe { andes_riscv::l1c::dc_invalidate(rx_aligned_start, rx_aligned_size); }
 
         r.ctrl().modify(|w| {
             w.set_rxdmaen(false);
@@ -1355,14 +1380,20 @@ impl<'d, W: Word> embedded_hal_async::spi::SpiBus<W> for Spi<'d, Async> {
     }
 
     async fn transfer(&mut self, read: &mut [W], write: &[W]) -> Result<(), Self::Error> {
-        let mut options = TransferConfig::default();
-        options.transfer_mode = TransMode::WRITE_READ_TOGETHER;
+        let options = TransferConfig {
+            transfer_mode: TransMode::WRITE_READ_TOGETHER,
+            // Note: dummy_cnt=0 for DMA mode, dummy cycles handled differently in DMA
+            ..Default::default()
+        };
         self.transfer(read, write, &options).await
     }
 
     async fn transfer_in_place(&mut self, words: &mut [W]) -> Result<(), Self::Error> {
-        let mut options = TransferConfig::default();
-        options.transfer_mode = TransMode::WRITE_READ_TOGETHER;
+        let options = TransferConfig {
+            transfer_mode: TransMode::WRITE_READ_TOGETHER,
+            // Note: dummy_cnt=0 for DMA mode, dummy cycles handled differently in DMA
+            ..Default::default()
+        };
         self.transfer_in_place(words, &options).await
     }
 }
