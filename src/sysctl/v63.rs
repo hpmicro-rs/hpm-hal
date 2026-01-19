@@ -20,13 +20,22 @@ const PLL1CLK1: Hertz = Hertz(320_000_000);
 const PLL2CLK0: Hertz = Hertz(516_096_000);
 const PLL2CLK1: Hertz = Hertz(451_584_000);
 
-const CLK_CPU0: Hertz = Hertz(400_000_000); // PLL0CLK0
+// Chip default state after power-on (before HAL init)
+// Assumes CPU runs from PLL0CLK0 with some default divider
+// These values will be updated by init() to reflect actual configuration
+const CLK_CPU0: Hertz = Hertz(400_000_000); // PLL0CLK0, assume div=1
 const CLK_AXI: Hertz = Hertz(400_000_000 / 3); // CLK_CPU0 / 3
 const CLK_AHB: Hertz = Hertz(400_000_000 / 3); // CLK_CPU0 / 3
 
 // const F_REF: Hertz = CLK_24M;
 
-/// The default system clock configuration
+/// System clock state
+///
+/// Initial values assume chip's power-on default state (before HAL init).
+/// The `cpu0`, `axi`, `ahb` fields are updated by `init()` to reflect
+/// the actual configured frequencies.
+///
+/// PLL frequencies are chip characteristics and remain constant.
 pub(crate) static mut CLOCKS: Clocks = Clocks {
     cpu0: CLK_CPU0,
     axi: CLK_AXI,
@@ -90,10 +99,52 @@ pub struct Config {
 }
 
 impl Default for Config {
+    /// HAL startup configuration (applied during init)
+    ///
+    /// This is NOT the chip's power-on default state, but the configuration
+    /// that HAL will apply when `init()` is called.
+    ///
+    /// C SDK configures:
+    /// - CPU = 648MHz (PLL1_CLK0/1, with PLL1 reconfigured to 648MHz)
+    /// - AXI = 162MHz (CPU/4)
+    /// - AHB = 162MHz (CPU/4)
+    ///
+    /// Since PLLCTLV2 configuration is not yet implemented, we use:
+    /// - CPU = 480MHz (PLL1_CLK0/1, default PLL1 frequency)
+    /// - AXI = 160MHz (CPU/3, within 166MHz bus limit)
+    /// - AHB = 160MHz (CPU/3, within 166MHz bus limit)
     fn default() -> Self {
         Self {
-            cpu0: ClockConfig::new(ClockMux::PLL0CLK0, 2),
+            cpu0: ClockConfig::new(ClockMux::PLL1CLK0, 1), // 480MHz
+            axi_div: SubDiv::DIV3, // 160MHz
+            ahb_div: SubDiv::DIV3, // 160MHz
+        }
+    }
+}
+
+impl Config {
+    /// Conservative configuration for lower power consumption
+    ///
+    /// - CPU = 200MHz (PLL0_CLK0/2)
+    /// - AXI = 200MHz (CPU/1)
+    /// - AHB = 66MHz (CPU/3)
+    pub const fn low_power() -> Self {
+        Self {
+            cpu0: ClockConfig::new(ClockMux::PLL0CLK0, 2), // 200MHz
             axi_div: SubDiv::DIV1,
+            ahb_div: SubDiv::DIV3,
+        }
+    }
+
+    /// High-performance configuration (default)
+    ///
+    /// - CPU = 480MHz (PLL1_CLK0/1)
+    /// - AXI = 160MHz (CPU/3)
+    /// - AHB = 160MHz (CPU/3)
+    pub const fn high_performance() -> Self {
+        Self {
+            cpu0: ClockConfig::new(ClockMux::PLL1CLK0, 1), // 480MHz
+            axi_div: SubDiv::DIV3,
             ahb_div: SubDiv::DIV3,
         }
     }
@@ -117,19 +168,22 @@ impl ClockConfig {
 }
 
 pub(crate) unsafe fn init(config: Config) {
-    // Bump up DCDC voltage to 1100mv for stable operation at higher frequencies
-    pac::PCFG.dcdc_mode().modify(|w| w.set_volt(1100));
+    // Bump up DCDC voltage to 1275mV for stable operation at higher frequencies
+    // (C SDK uses 1275mV, lower voltage may cause instability)
+    pac::PCFG.dcdc_mode().modify(|w| w.set_volt(1275));
 
     if SYSCTL.clock_cpu(0).read().mux() == ClockMux::CLK_24M {
         // TODO, enable XTAL
         // SYSCTL.global00().modify(|w| w.set_mux(0b11));
     }
 
+    // Core resources
     clock_add_to_group(pac::resources::CPU0, 0);
     clock_add_to_group(pac::resources::AHBP, 0);
     clock_add_to_group(pac::resources::AXIC, 0);
     clock_add_to_group(pac::resources::AXIS, 0);
 
+    // Memory and bus resources
     clock_add_to_group(pac::resources::MCT0, 0);
     clock_add_to_group(pac::resources::FEMC, 0);
     clock_add_to_group(pac::resources::XPI0, 0);
@@ -138,6 +192,22 @@ pub(crate) unsafe fn init(config: Config) {
     clock_add_to_group(pac::resources::TMR0, 0);
     clock_add_to_group(pac::resources::WDG0, 0);
     clock_add_to_group(pac::resources::LMM0, 0);
+    clock_add_to_group(pac::resources::RAM0, 0);
+
+    // DMA controllers - required for ENET DMA and other peripherals
+    clock_add_to_group(pac::resources::DMA0, 0); // HDMA
+    clock_add_to_group(pac::resources::DMA1, 0); // XDMA
+
+    // Ethernet controller - required for ENET0 to function
+    clock_add_to_group(pac::resources::ETH0, 0);
+
+    // Motor control - required for PWM peripherals (C SDK: clock_mot0, clock_mot1)
+    clock_add_to_group(pac::resources::MOT0, 0);
+    clock_add_to_group(pac::resources::MOT1, 0);
+
+    // Synchronization timer and PTP clock - required for ENET PTP
+    clock_add_to_group(pac::resources::SYNT, 0);
+    clock_add_to_group(pac::resources::PTPC, 0);
 
     clock_add_to_group(pac::resources::GPIO, 0);
 
