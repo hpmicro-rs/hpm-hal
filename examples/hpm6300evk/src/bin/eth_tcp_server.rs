@@ -27,7 +27,7 @@ use embassy_net::StackResources;
 use embassy_time::{Duration, Instant, Timer};
 use embedded_io_async::{Read as _, Write as _};
 use hal::bind_interrupts;
-use hal::eth::{self, Config as EthConfig, Ethernet, GenericPhy, PacketQueue};
+use hal::enet::{self, Config as EnetConfig, Ethernet, GenericPhy, PacketQueue};
 use hal::peripherals::ENET0;
 use static_cell::StaticCell;
 use {defmt_rtt as _, hpm_hal as hal};
@@ -37,7 +37,7 @@ const TELNET_PORT: u16 = 23;
 const PHY_ADDR: u8 = 1;
 
 bind_interrupts!(struct Irqs {
-    ENET0 => eth::InterruptHandler<ENET0>;
+    ENET0 => enet::InterruptHandler<ENET0>;
 });
 
 #[unsafe(link_section = ".noncacheable")]
@@ -99,7 +99,7 @@ async fn main(spawner: Spawner) -> ! {
         mac_addr[0], mac_addr[1], mac_addr[2],
         mac_addr[3], mac_addr[4], mac_addr[5]);
 
-    let eth_config = EthConfig {
+    let enet_config = EnetConfig {
         mac_addr,
         ..Default::default()
     };
@@ -119,7 +119,7 @@ async fn main(spawner: Spawner) -> ! {
         p.PA15, // mdio
         p.PA16, // mdc
         unsafe { &mut *core::ptr::addr_of_mut!(PACKET_QUEUE) },
-        eth_config,
+        enet_config,
     );
 
     info!("Ethernet initialized");

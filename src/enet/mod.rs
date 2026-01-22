@@ -12,7 +12,7 @@
 //!
 //! # Example
 //! ```no_run
-//! use hpm_hal::eth::{Ethernet, Config, GenericSmi};
+//! use hpm_hal::enet::{Ethernet, Config, GenericSmi};
 //!
 //! // Create the ethernet driver
 //! let eth = Ethernet::new(

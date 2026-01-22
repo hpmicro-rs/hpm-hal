@@ -31,7 +31,7 @@ use embassy_executor::Spawner;
 use embassy_net::StackResources;
 use embassy_time::{Duration, Timer};
 use hal::bind_interrupts;
-use hal::eth::{self, Config as EthConfig, Ethernet, GenericPhy, GenericSmi, PacketQueue, SmiClockDivider};
+use hal::enet::{self, Config as EnetConfig, Ethernet, GenericPhy, GenericSmi, PacketQueue, SmiClockDivider};
 use hal::peripherals::ENET0;
 use static_cell::StaticCell;
 use {defmt_rtt as _, hpm_hal as hal};
@@ -42,7 +42,7 @@ const BOARD_NAME: &str = "HPM6300EVK";
 const PHY_ADDR: u8 = 1;
 
 bind_interrupts!(struct Irqs {
-    ENET0 => eth::InterruptHandler<ENET0>;
+    ENET0 => enet::InterruptHandler<ENET0>;
 });
 
 // Packet queue for DMA descriptors and buffers
@@ -155,13 +155,13 @@ async fn main(spawner: Spawner) -> ! {
 
     // Create ethernet configuration
     info!("Creating Ethernet config...");
-    let eth_config = EthConfig {
+    let enet_config = EnetConfig {
         mac_addr: [0x02, 0x00, 0x00, 0x00, 0x00, 0x01], // Locally administered MAC
         ..Default::default()
     };
     info!("MAC address: {:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
-        eth_config.mac_addr[0], eth_config.mac_addr[1], eth_config.mac_addr[2],
-        eth_config.mac_addr[3], eth_config.mac_addr[4], eth_config.mac_addr[5]);
+        enet_config.mac_addr[0], enet_config.mac_addr[1], enet_config.mac_addr[2],
+        enet_config.mac_addr[3], enet_config.mac_addr[4], enet_config.mac_addr[5]);
 
     // Small delay to ensure RTT captures early logs
     Timer::after(Duration::from_millis(100)).await;
@@ -194,7 +194,7 @@ async fn main(spawner: Spawner) -> ! {
         p.PA15, // mdio
         p.PA16, // mdc
         unsafe { &mut *core::ptr::addr_of_mut!(PACKET_QUEUE) },
-        eth_config,
+        enet_config,
     );
 
     info!("Ethernet peripheral initialized successfully!");
