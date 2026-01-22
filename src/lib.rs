@@ -107,7 +107,7 @@ pub mod sdxc;
 
 // ENET (Ethernet MAC)
 #[cfg(enet)]
-pub mod eth;
+pub mod enet;
 
 #[cfg(feature = "rt")]
 pub use hpm_riscv_rt::{entry, external_interrupt, fast, pre_init};
