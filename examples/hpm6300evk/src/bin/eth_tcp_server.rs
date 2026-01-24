@@ -27,14 +27,14 @@ use embassy_net::StackResources;
 use embassy_time::{Duration, Instant, Timer};
 use embedded_io_async::{Read as _, Write as _};
 use hal::bind_interrupts;
-use hal::enet::{self, Config as EnetConfig, Ethernet, GenericPhy, PacketQueue};
+use hal::enet::{self, Config as EnetConfig, Ethernet, GenericPhy, PacketQueue, SmiClockDivider};
 use hal::peripherals::ENET0;
 use static_cell::StaticCell;
 use {defmt_rtt as _, hpm_hal as hal};
 
 const BOARD_NAME: &str = "HPM6300EVK";
 const TELNET_PORT: u16 = 23;
-const PHY_ADDR: u8 = 1;
+const PHY_ADDR: u8 = 0; // RTL8201 at address 0
 
 bind_interrupts!(struct Irqs {
     ENET0 => enet::InterruptHandler<ENET0>;
@@ -125,7 +125,9 @@ async fn main(spawner: Spawner) -> ! {
     info!("Ethernet initialized");
 
     // Configure PHY
-    let smi = eth.smi();
+    let mut smi = eth.smi();
+    // Set MDC clock divider: AHB=120MHz, divider=102 -> MDC ≈ 1.2MHz (< 2.5MHz required)
+    smi.set_clock_divider(SmiClockDivider::Div102);
     let mut phy = GenericPhy::new(smi, PHY_ADDR);
 
     info!("Resetting PHY...");
@@ -226,6 +228,7 @@ async fn main(spawner: Spawner) -> ! {
         }
 
         cmd_len = 0;
+        let mut iac_state = 0u8; // Telnet IAC state machine: 0=normal, 1=saw IAC, 2=wait option, 3=in SB, 4=SB saw IAC
 
         // Command loop
         loop {
@@ -237,6 +240,56 @@ async fn main(spawner: Spawner) -> ! {
                 }
                 Ok(_) => {
                     let ch = buf[0];
+
+                    // Telnet IAC state machine filter
+                    // State: 0=normal, 1=saw IAC, 2=saw IAC+cmd (wait option), 3=in SB, 4=in SB saw IAC
+                    match iac_state {
+                        0 => {
+                            if ch == 0xFF { // IAC
+                                iac_state = 1;
+                                continue;
+                            }
+                            // Normal character, fall through to processing
+                        }
+                        1 => {
+                            // After IAC
+                            match ch {
+                                0xFA => iac_state = 3, // SB - sub-negotiation begin
+                                0xFB..=0xFE => iac_state = 2, // WILL/WONT/DO/DONT - wait for option
+                                0xFF => {
+                                    // Escaped IAC (literal 0xFF) - treat as normal char
+                                    iac_state = 0;
+                                    // Fall through to process 0xFF as data (though rare)
+                                }
+                                _ => iac_state = 0, // Other command, done
+                            }
+                            if iac_state != 0 || ch != 0xFF {
+                                continue;
+                            }
+                        }
+                        2 => {
+                            // After IAC + WILL/WONT/DO/DONT, this is the option byte - skip it
+                            iac_state = 0;
+                            continue;
+                        }
+                        3 => {
+                            // In sub-negotiation
+                            if ch == 0xFF {
+                                iac_state = 4; // Might be IAC SE
+                            }
+                            continue;
+                        }
+                        4 => {
+                            // In sub-negotiation, saw IAC
+                            if ch == 0xF0 { // SE - sub-negotiation end
+                                iac_state = 0;
+                            } else {
+                                iac_state = 3; // Not SE, still in sub-negotiation
+                            }
+                            continue;
+                        }
+                        _ => {}
+                    }
 
                     // Echo the character
                     if ch == b'\r' || ch == b'\n' {

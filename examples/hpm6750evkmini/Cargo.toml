@@ -55,9 +55,11 @@ libm = "0.2"
 
 rw007 = { path = "../../../rw007", features = ["defmt", "async"] }
 
-# embassy-net dependencies - uncomment when network is available
-# embassy-net = { path = "../../../embassy/embassy-net", features = ["dhcpv4", "proto-ipv4", "tcp", "udp", "dns", "medium-ethernet", "defmt"] }
-# embassy-net-driver = { path = "../../../embassy/embassy-net-driver" }
+# embassy-net dependencies
+embassy-net = { version = "0.8.0", features = ["dhcpv4", "proto-ipv4", "tcp", "udp", "dns", "medium-ethernet", "defmt"] }
+embassy-net-driver = "0.2.0"
+
+embedded-io-async = "0.7"
 
 [profile.release]
 strip = false   # symbols are not flashed to the microcontroller, so don't strip them.

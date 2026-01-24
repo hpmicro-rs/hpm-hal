@@ -39,7 +39,7 @@ use {defmt_rtt as _, hpm_hal as hal};
 const BOARD_NAME: &str = "HPM6300EVK";
 
 // PHY address - typically 0 or 1 for onboard PHY
-const PHY_ADDR: u8 = 1;
+const PHY_ADDR: u8 = 0; // RTL8201 at address 0
 
 bind_interrupts!(struct Irqs {
     ENET0 => enet::InterruptHandler<ENET0>;
