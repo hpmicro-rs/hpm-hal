@@ -284,16 +284,26 @@ impl TDes {
 
     /// Prepare TX descriptor for transmission (direct write, no read-modify-write)
     ///
-    /// Sets: TCH (chain mode), FS (first segment), LS (last segment), IC (interrupt), OWN
+    /// Sets: TCH (chain mode), FS (first segment), LS (last segment), OWN
     /// This avoids multiple read-modify-write operations on noncacheable memory.
     #[inline]
     pub fn prepare_tx(&mut self, buf_addr: u32, len: u16) {
-        // tdes0: TCH | FS | LS | IC | OWN
-        // TCH = bit 20, FS = bit 28, LS = bit 29, IC = bit 30, OWN = bit 31
-        const TX_FLAGS: u32 = tdes0::TCH | tdes0::FS | tdes0::LS | tdes0::IC | tdes0::OWN;
+        // TDES0 flags - simplified configuration:
+        // - TCH = bit 20: TX Chain mode
+        // - FS = bit 28: First Segment
+        // - LS = bit 29: Last Segment
+        // - IC = bit 30: Interrupt on Completion
+        // - OWN = bit 31: DMA owns descriptor
+        // - CIC = bits 23:22 = 3: Full checksum offload (IP + TCP/UDP + pseudo-header)
+        // NOTE: DC=0 and CRCR=0 so MAC will automatically append CRC to frames
+        const CIC_FULL: u32 = 3 << 22;
+        const TX_FLAGS: u32 = tdes0::TCH | tdes0::FS | tdes0::LS | tdes0::IC
+            | CIC_FULL | tdes0::OWN;
 
-        // Write buffer size to tdes1 (just write, tdes1 should be 0 for unused bits)
-        self.tdes1.set(len as u32);
+        // TDES1: TBS1 (bits 12:0) only
+        // C SDK default: SAIC=0 (disable source address insertion control)
+        // Note: SARC in MACCFG handles source address replacement, not SAIC in descriptor
+        self.tdes1.set(len as u32 & 0x1FFF);
 
         // Write buffer address to tdes2
         self.tdes2.set(buf_addr);
@@ -301,7 +311,7 @@ impl TDes {
         // Write control/status to tdes0 (this triggers the DMA)
         // Do this last after all other fields are set
         self.tdes0.set(TX_FLAGS);
-        
+
         // Memory barrier AFTER setting OWN bit (matching C SDK: fence rw, rw)
         // This ensures DMA sees the complete descriptor before we poll
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);

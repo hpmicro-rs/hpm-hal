@@ -1,6 +1,8 @@
-//! System control, clocks, group links.
+//! System control, clocks, group links for HPM6E00 series.
 
-use super::{Pll, clock_add_to_group};
+use core::ops;
+
+use super::clock_add_to_group;
 use crate::pac;
 pub use crate::pac::sysctl::vals::ClockMux;
 use crate::pac::{PLLCTL, SYSCTL};
@@ -9,36 +11,56 @@ use crate::time::Hertz;
 pub const CLK_32K: Hertz = Hertz(32_768);
 pub const CLK_24M: Hertz = Hertz(24_000_000);
 
-// default clock sources
-const PLL0CLK0: Hertz = Hertz(600_000_000);
-const PLL0CLK1: Hertz = Hertz(500_000_000);
+// ============================================================================
+// Hardware default PLL clock sources (chip power-on state, before preset)
+// These are the frequencies when CPU runs at 24MHz (before board_init_clock)
+// ============================================================================
 
-const PLL1CLK0: Hertz = Hertz(400_000_000);
-const PLL1CLK1: Hertz = Hertz(333_333_333);
-const PLL1CLK2: Hertz = Hertz(250_000_000);
+// PLL0 power-on defaults (before preset)
+const PLL0CLK0_DEFAULT: Hertz = Hertz(600_000_000);
+const PLL0CLK1_DEFAULT: Hertz = Hertz(500_000_000);
 
-// PLL2: 722_534_400
-const PLL2CLK0: Hertz = Hertz(516_096_000); // 1.4
-const PLL2CLK1: Hertz = Hertz(451_584_000); // 1.6
+// PLL1 power-on defaults
+const PLL1CLK0_DEFAULT: Hertz = Hertz(800_000_000);
+const PLL1CLK1_DEFAULT: Hertz = Hertz(333_333_333);
+const PLL1CLK2_DEFAULT: Hertz = Hertz(250_000_000);
 
-const CLK_CPU0: Hertz = Hertz(600_000_000); // PLL0CLK0
-const CLK_CPU1: Hertz = Hertz(600_000_000); // PLL0CLK0
-const CLK_AHB: Hertz = Hertz(400_000_000 / 2); // PLL1CLK0 / 2
+// PLL2 power-on defaults
+const PLL2CLK0_DEFAULT: Hertz = Hertz(516_096_000);
+const PLL2CLK1_DEFAULT: Hertz = Hertz(451_584_000);
 
-const F_REF: Hertz = CLK_24M;
+// Chip power-on state (before HAL init, after ROM boot)
+// CPU typically runs at 24MHz from OSC before preset is applied
+const CLK_CPU0_DEFAULT: Hertz = CLK_24M;
+const CLK_CPU1_DEFAULT: Hertz = CLK_24M;
+const CLK_AHB_DEFAULT: Hertz = CLK_24M;
 
-/// The default system clock configuration
+// ============================================================================
+// SDK default clock frequencies (after preset1/2 applied)
+// ============================================================================
+
+// After C SDK board_init_clock() with preset2:
+// - CPU0/CPU1 = 600MHz (PLL0_CLK0/1)
+// - AHB = 200MHz (PLL1_CLK0/4)
+const CLK_CPU0_SDK: Hertz = Hertz(600_000_000);
+const CLK_CPU1_SDK: Hertz = Hertz(600_000_000);
+const CLK_AHB_SDK: Hertz = Hertz(200_000_000);
+
+/// System clock state (runtime snapshot)
+///
+/// Initial values assume chip's power-on default state (before HAL init).
+/// All fields are updated by `init()` to reflect the actual configured frequencies.
 pub(crate) static mut CLOCKS: Clocks = Clocks {
-    cpu0: CLK_CPU0,
-    cpu1: CLK_CPU1,
-    ahb: CLK_AHB,
-    pll0clk0: PLL0CLK0,
-    pll0clk1: PLL0CLK1,
-    pll1clk0: PLL1CLK0,
-    pll1clk1: PLL1CLK1,
-    pll1clk2: PLL1CLK2,
-    pll2clk0: PLL2CLK0,
-    pll2clk1: PLL2CLK1,
+    cpu0: CLK_CPU0_DEFAULT,
+    cpu1: CLK_CPU1_DEFAULT,
+    ahb: CLK_AHB_DEFAULT,
+    pll0clk0: PLL0CLK0_DEFAULT,
+    pll0clk1: PLL0CLK1_DEFAULT,
+    pll1clk0: PLL1CLK0_DEFAULT,
+    pll1clk1: PLL1CLK1_DEFAULT,
+    pll1clk2: PLL1CLK2_DEFAULT,
+    pll2clk0: PLL2CLK0_DEFAULT,
+    pll2clk1: PLL2CLK1_DEFAULT,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -49,7 +71,7 @@ pub struct Clocks {
     /// AHB clock: HDMA, HRAM, MOT, ACMP, GPIO, ADC/DAC
     pub ahb: Hertz,
 
-    // System clock source
+    // PLL clock sources
     pub pll0clk0: Hertz,
     pub pll0clk1: Hertz,
     pub pll1clk0: Hertz,
@@ -86,24 +108,107 @@ impl Clocks {
     }
 }
 
+// ============================================================================
+// System Clock Configuration
+// ============================================================================
+
+/// Clock preset selection
+///
+/// HPM6E00 uses a preset mechanism for clock configuration. Each preset
+/// defines a complete clock tree configuration including PLL frequencies
+/// and dividers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[repr(u8)]
+pub enum ClockPreset {
+    /// Preset 0
+    Preset0 = 1,
+    /// Preset 1 - C SDK default (600MHz CPU)
+    Preset1 = 2,
+    /// Preset 2
+    Preset2 = 4,
+    /// Preset 3
+    Preset3 = 8,
+}
+
+/// AHB clock divider (from source clock)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[repr(u8)]
+pub enum AhbDiv {
+    DIV1 = 0,
+    DIV2 = 1,
+    DIV3 = 2,
+    DIV4 = 3,
+    DIV5 = 4,
+    DIV6 = 5,
+    DIV7 = 6,
+    DIV8 = 7,
+}
+
 pub struct Config {
-    pub pll0: Option<Pll<[u8; 2]>>,
-    pub pll1: Option<Pll<[u8; 3]>>,
-    pub pll2: Option<Pll<[u8; 2]>>,
+    /// Clock preset selection
+    ///
+    /// C SDK uses Preset1 (value=2) by default, which configures:
+    /// - PLL0_CLK0 = 600MHz
+    /// - PLL1_CLK0 = 800MHz
+    /// - CPU = 600MHz (PLL0_CLK0/1)
+    /// - AHB = 200MHz (PLL1_CLK0/4)
+    pub preset: Option<ClockPreset>,
+
+    /// CPU0 clock configuration (applied after preset)
     pub cpu0: ClockConfig,
+
+    /// CPU1 clock configuration (applied after preset)
     pub cpu1: ClockConfig,
+
+    /// AHB clock configuration
     pub ahb: ClockConfig,
 }
 
 impl Default for Config {
+    /// HAL startup configuration (C SDK compatible)
+    ///
+    /// Uses Preset1:
+    /// - PLL0_CLK0 = 600MHz, PLL1_CLK0 = 800MHz
+    /// - CPU0/CPU1 = 600MHz (PLL0_CLK0/1)
+    /// - AHB = 200MHz (PLL1_CLK0/4)
     fn default() -> Self {
-        Config {
-            pll0: None,
-            pll1: None,
-            pll2: None,
-            cpu0: ClockConfig::new(ClockMux::PLL0CLK0, 1),
-            cpu1: ClockConfig::new(ClockMux::PLL0CLK0, 1),
-            ahb: ClockConfig::new(ClockMux::PLL1CLK0, 2),
+        Self {
+            preset: Some(ClockPreset::Preset1), // C SDK default
+            cpu0: ClockConfig::new(ClockMux::PLL0CLK0, 1), // 600MHz
+            cpu1: ClockConfig::new(ClockMux::PLL0CLK0, 1), // 600MHz
+            ahb: ClockConfig::new(ClockMux::PLL1CLK0, 4),  // 800MHz / 4 = 200MHz
+        }
+    }
+}
+
+impl Config {
+    /// Minimal configuration - keep hardware default state
+    ///
+    /// - No preset change (uses ROM boot state)
+    /// - CPU runs at 24MHz from OSC
+    /// - Only adds peripherals to clock group
+    pub const fn minimal() -> Self {
+        Self {
+            preset: None,
+            cpu0: ClockConfig::new(ClockMux::CLK_24M, 1), // 24MHz
+            cpu1: ClockConfig::new(ClockMux::CLK_24M, 1), // 24MHz
+            ahb: ClockConfig::new(ClockMux::CLK_24M, 1),  // 24MHz
+        }
+    }
+
+    /// High-performance configuration (C SDK compatible)
+    ///
+    /// - Preset1: PLL0_CLK0 = 600MHz, PLL1_CLK0 = 800MHz
+    /// - CPU0/CPU1 = 600MHz (PLL0_CLK0/1)
+    /// - AHB = 200MHz (PLL1_CLK0/4)
+    pub const fn high_performance() -> Self {
+        Self {
+            preset: Some(ClockPreset::Preset1),
+            cpu0: ClockConfig::new(ClockMux::PLL0CLK0, 1), // 600MHz
+            cpu1: ClockConfig::new(ClockMux::PLL0CLK0, 1), // 600MHz
+            ahb: ClockConfig::new(ClockMux::PLL1CLK0, 4),  // 200MHz
         }
     }
 }
@@ -125,31 +230,77 @@ impl ClockConfig {
     }
 }
 
-#[inline]
-fn output_freq_of_pll(pll: usize) -> u64 {
-    let fref = F_REF.0 as f64;
-    let mfd = 240_000_000.0; // default value
+/// PLLCTLV2 constants
+const PLLCTL_XTAL_FREQ: u32 = 24_000_000;
+const PLLCTL_MFD_DEFAULT: u32 = 240_000_000;
 
-    let mfi = PLLCTL.pll(pll).mfi().read().mfi() as f64;
-    let mfn = PLLCTL.pll(pll).mfn().read().mfn() as f64;
+/// Read PLL VCO frequency from hardware registers
+fn read_pll_vco_freq(pll: usize) -> Hertz {
+    let mfi = PLLCTL.pll(pll).mfi().read().mfi() as u64;
+    let mfn = PLLCTL.pll(pll).mfn().read().mfn() as u64;
 
-    let fvco = fref * (mfi + mfn / mfd);
+    // fvco = fref * (mfi + mfn / mfd)
+    let fref = PLLCTL_XTAL_FREQ as u64;
+    let mfd = PLLCTL_MFD_DEFAULT as u64;
 
-    fvco as u64
+    let fvco = fref * mfi + fref * mfn / mfd;
+    Hertz(fvco as u32)
+}
+
+/// Read PLL output clock frequency (after post-divider)
+fn read_pll_postdiv_freq(pll: usize, clk: usize) -> Hertz {
+    let vco_freq = read_pll_vco_freq(pll);
+
+    let div_raw = PLLCTL.pll(pll).div(clk).read().div() as u64;
+
+    // Divider formula: actual_div = 1.0 + div_raw * 0.2 = (10 + div_raw * 2) / 10
+    let vco_freq_u64 = vco_freq.0 as u64;
+    let div_value_x10 = 10 + div_raw * 2;
+    Hertz((vco_freq_u64 * 10 / div_value_x10) as u32)
+}
+
+/// Update CLOCKS with actual PLL frequencies from hardware
+unsafe fn update_pll_frequencies() {
+    // PLL0: CLK0, CLK1
+    CLOCKS.pll0clk0 = read_pll_postdiv_freq(0, 0);
+    CLOCKS.pll0clk1 = read_pll_postdiv_freq(0, 1);
+
+    // PLL1: CLK0, CLK1, CLK2
+    CLOCKS.pll1clk0 = read_pll_postdiv_freq(1, 0);
+    CLOCKS.pll1clk1 = read_pll_postdiv_freq(1, 1);
+    CLOCKS.pll1clk2 = read_pll_postdiv_freq(1, 2);
+
+    // PLL2: CLK0, CLK1
+    CLOCKS.pll2clk0 = read_pll_postdiv_freq(2, 0);
+    CLOCKS.pll2clk1 = read_pll_postdiv_freq(2, 1);
 }
 
 pub(crate) unsafe fn init(config: Config) {
-    const PLLCTL_SOC_PLL_REFCLK_FREQ: u32 = 24 * 1_000_000;
+    const PLLCTL_SOC_PLL_REFCLK_FREQ: u32 = 24_000_000;
 
-    if CLOCKS.get_clock_freq(pac::clocks::CPU0).0 == PLLCTL_SOC_PLL_REFCLK_FREQ {
-        // Configure the External OSC ramp-up time: ~9ms
-        let rc24m_cycles = 32 * 1000 * 9;
-        PLLCTL.xtal().modify(|w| w.set_ramp_time(rc24m_cycles));
+    // Check if we need to apply preset (CPU still running at 24MHz from OSC)
+    let need_preset = CLOCKS.get_clock_freq(pac::clocks::CPU0).0 == PLLCTL_SOC_PLL_REFCLK_FREQ;
 
-        // select clock setting preset1
-        SYSCTL.global00().modify(|w| w.set_mux(2));
+    if need_preset {
+        if let Some(preset) = config.preset {
+            // Configure the External OSC ramp-up time: ~9ms
+            let rc24m_cycles = 32 * 1000 * 9;
+            PLLCTL.xtal().modify(|w| w.set_ramp_time(rc24m_cycles));
+
+            // Select clock setting preset
+            SYSCTL.global00().modify(|w| w.set_mux(preset as u8));
+
+            // Wait for clock to stabilize after preset change
+            for _ in 0..10000 {
+                core::hint::spin_loop();
+            }
+        }
     }
 
+    // Update PLL frequencies from hardware after preset
+    update_pll_frequencies();
+
+    // Add clocks to group 0 for CPU0
     clock_add_to_group(pac::resources::CPU0, 0);
     clock_add_to_group(pac::resources::AHBP, 0);
     clock_add_to_group(pac::resources::AXIC, 0);
@@ -171,6 +322,11 @@ pub(crate) unsafe fn init(config: Config) {
     clock_add_to_group(pac::resources::XDMA, 0);
     clock_add_to_group(pac::resources::USB0, 0);
 
+    // ENET clock
+    clock_add_to_group(pac::resources::ETH0, 0);
+    // PTPC (Precision Time Protocol Controller)
+    clock_add_to_group(pac::resources::PTPC, 0);
+
     // MBX clock resource is shared
     clock_add_to_group(pac::resources::MBX0, 0);
     clock_add_to_group(pac::resources::MBX1, 0);
@@ -178,39 +334,51 @@ pub(crate) unsafe fn init(config: Config) {
     // Connect Group0 to CPU0
     SYSCTL.affiliate(0).set().write(|w| w.set_link(1 << 0));
 
-    clock_add_to_group(pac::resources::CPU1, 0);
+    // Add CPU1 clock to Group1
+    clock_add_to_group(pac::resources::CPU1, 1);
     clock_add_to_group(pac::resources::MCT1, 1);
 
+    // Connect Group1 to CPU1
     SYSCTL.affiliate(1).set().write(|w| w.set_link(1 << 1));
 
-    // Bump up DCDC voltage to 1175mv (default is 1150)
+    // Bump up DCDC voltage to 1200mV for stable operation at higher frequencies
     pac::PCFG.dcdc_mode().modify(|w| w.set_volt(1200));
 
-    // TODO: PLL setting
-    let pll2 = output_freq_of_pll(2);
-
+    // Configure CPU0 clock
     SYSCTL.clock(pac::clocks::CPU0).modify(|w| {
         w.set_mux(config.cpu0.src);
         w.set_div(config.cpu0.raw_div);
     });
+
+    // Configure CPU1 clock
     SYSCTL.clock(pac::clocks::CPU1).modify(|w| {
         w.set_mux(config.cpu1.src);
         w.set_div(config.cpu1.raw_div);
     });
+
+    // Configure AHB clock
     SYSCTL.clock(pac::clocks::AHB0).modify(|w| {
         w.set_mux(config.ahb.src);
         w.set_div(config.ahb.raw_div);
     });
 
-    while SYSCTL.clock(0).read().glb_busy() {}
+    // Wait for clock configuration to complete
+    while SYSCTL.clock(pac::clocks::CPU0).read().glb_busy() {}
 
+    // Update runtime clock state
     let cpu0_clk = CLOCKS.get_freq(&config.cpu0);
     let cpu1_clk = CLOCKS.get_freq(&config.cpu1);
     let ahb_clk = CLOCKS.get_freq(&config.ahb);
 
-    unsafe {
-        CLOCKS.cpu0 = cpu0_clk;
-        CLOCKS.cpu1 = cpu1_clk;
-        CLOCKS.ahb = ahb_clk;
+    CLOCKS.cpu0 = cpu0_clk;
+    CLOCKS.cpu1 = cpu1_clk;
+    CLOCKS.ahb = ahb_clk;
+}
+
+impl ops::Div<AhbDiv> for Hertz {
+    type Output = Hertz;
+
+    fn div(self, rhs: AhbDiv) -> Hertz {
+        Hertz(self.0 / (rhs as u32 + 1))
     }
 }

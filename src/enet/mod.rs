@@ -36,10 +36,8 @@ use embassy_net_driver::{Capabilities, HardwareAddress, LinkState};
 use embassy_sync::waitqueue::AtomicWaker;
 
 use crate::interrupt::typelevel::Interrupt as _;
-use crate::sysctl::{ClockConfig, SealedClockPeripheral};
+use crate::sysctl::SealedClockPeripheral;
 use crate::{interrupt, pac};
-#[cfg(hpm63)]
-use crate::pac::sysctl::vals::ClockMux;
 
 /// Ethernet error
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,8 +65,8 @@ pub enum Error {
 // ============================================================================
 
 const CACHELINE_SIZE: u32 = 64;
-const L1D_VA_WB: u32 = 1;     // Writeback by virtual address
-const L1D_VA_INVAL: u32 = 0;  // Invalidate by virtual address (NOT 3!)
+const L1D_VA_WB: u32 = 1;       // Writeback by virtual address
+const L1D_VA_WBINVAL: u32 = 2;  // Writeback + Invalidate by virtual address
 
 /// Flush D-cache for a memory region (CPU write -> DMA read)
 #[inline]
@@ -86,6 +84,7 @@ fn flush_dcache(addr: u32, size: u32) {
 }
 
 /// Invalidate D-cache for a memory region (DMA write -> CPU read)
+/// Uses WBINVAL to ensure any dirty cache lines are written back first
 #[inline]
 fn invalidate_dcache(addr: u32, size: u32) {
     let mut current = addr & !(CACHELINE_SIZE - 1);
@@ -93,11 +92,11 @@ fn invalidate_dcache(addr: u32, size: u32) {
     while current < end {
         unsafe {
             core::arch::asm!("csrw 0x7CB, {0}", in(reg) current); // MCCTLBEGINADDR
-            core::arch::asm!("csrw 0x7CC, {0}", in(reg) L1D_VA_INVAL); // MCCTLCOMMAND
+            core::arch::asm!("csrw 0x7CC, {0}", in(reg) L1D_VA_WBINVAL); // Writeback + Invalidate
         }
         current += CACHELINE_SIZE;
     }
-    core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+    unsafe { core::arch::asm!("fence rw, rw") };
 }
 
 /// Ethernet interface mode
@@ -210,43 +209,23 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
 unsafe fn on_interrupt(regs: pac::enet::Enet, state: &'static State) {
     let status = regs.dma_status().read();
 
-    // Normal interrupt summary
-    if status.nis() {
-        // Receive interrupt
-        if status.ri() {
-            // Clear the interrupt
-            regs.dma_status().write(|w| w.set_ri(true));
-            state.rx_waker.wake();
+    #[cfg(feature = "defmt")]
+    {
+        static mut IRQ_COUNT: u32 = 0;
+        IRQ_COUNT += 1;
+        if IRQ_COUNT % 10000 == 1 {
+            defmt::debug!("ENET IRQ #{}: status=0x{:08X}", IRQ_COUNT, status.0);
         }
-
-        // Transmit interrupt
-        if status.ti() {
-            // Clear the interrupt
-            regs.dma_status().write(|w| w.set_ti(true));
-            state.tx_waker.wake();
-        }
-
-        // Clear NIS
-        regs.dma_status().write(|w| w.set_nis(true));
     }
 
-    // Abnormal interrupt summary
-    if status.ais() {
-        // Clear AIS and any abnormal status bits
-        regs.dma_status().write(|w| {
-            w.set_ais(true);
-            w.set_fbi(true);  // Fatal bus error
-            w.set_eri(true);  // Early receive
-            w.set_eti(true);  // Early transmit
-            w.set_rwt(true);  // Receive watchdog timeout
-            w.set_rps(true);  // Receive process stopped
-            w.set_ru(true);   // Receive buffer unavailable
-            w.set_unf(true);  // Transmit underflow
-            w.set_ovf(true);  // Receive overflow
-            w.set_tjt(true);  // Transmit jabber timeout
-            w.set_tps(true);  // Transmit process stopped
-        });
-    }
+    // Clear ALL status bits by writing 1s (w1c register)
+    // This prevents interrupt storms from unhandled status bits
+    regs.dma_status().write(|w| w.0 = 0x0001_E7FF);  // All clearable bits
+
+    // Always wake both wakers - let embassy-net poll and decide
+    // This ensures RX/TX progress even if specific interrupt bits are not set
+    state.rx_waker.wake();
+    state.tx_waker.wake();
 }
 
 /// Ethernet driver
@@ -308,9 +287,11 @@ impl<'d, T: Instance> Ethernet<'d, T> {
         // Enable clocks - add ETH resource to group 0
         T::add_resource_group(0);
 
-        // Configure ETH reference clock for HPM6300
+        // Configure ETH reference clock
         #[cfg(hpm63)]
         Self::configure_eth_clock_hpm63();
+        #[cfg(hpm6e)]
+        Self::configure_eth_clock_hpm6e();
 
         let regs = T::info().regs;
 
@@ -355,6 +336,158 @@ impl<'d, T: Instance> Ethernet<'d, T> {
         }
     }
 
+    /// Create a new Ethernet driver (RGMII mode) for HPM6E00 series
+    ///
+    /// # Arguments
+    /// * `tx_delay` - TX clock delay (0-63), typical: 0
+    /// * `rx_delay` - RX clock delay (0-63), typical: 0
+    ///
+    /// # Safety
+    /// The packet queue must live as long as the driver.
+    #[cfg(hpm6e)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_rgmii<const TX_COUNT: usize, const RX_COUNT: usize>(
+        peri: Peri<'d, T>,
+        _irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>>,
+        rx_ctl: Peri<'d, impl RgmiiRxCtlPin<T>>,
+        rxd0: Peri<'d, impl Rxd0Pin<T>>,
+        rxd1: Peri<'d, impl Rxd1Pin<T>>,
+        rxd2: Peri<'d, impl Rxd2Pin<T>>,
+        rxd3: Peri<'d, impl Rxd3Pin<T>>,
+        rx_clk: Peri<'d, impl RxClkPin<T>>,
+        tx_clk: Peri<'d, impl TxClkPin<T>>,
+        txd0: Peri<'d, impl Txd0Pin<T>>,
+        txd1: Peri<'d, impl Txd1Pin<T>>,
+        txd2: Peri<'d, impl Txd2Pin<T>>,
+        txd3: Peri<'d, impl Txd3Pin<T>>,
+        tx_en: Peri<'d, impl TxEnPin<T>>,
+        mdio: Peri<'d, impl MdioPin<T>>,
+        mdc: Peri<'d, impl MdcPin<T>>,
+        queue: &'d mut PacketQueue<TX_COUNT, RX_COUNT>,
+        config: Config,
+        tx_delay: u8,
+        rx_delay: u8,
+    ) -> Self {
+        #[cfg(feature = "defmt")]
+        defmt::debug!("RGMII: add_resource_group");
+        // Enable clocks FIRST - add ETH resource to group 0
+        T::add_resource_group(0);
+
+        // NOTE: For RGMII mode, C SDK does NOT configure ETH0 clock mux/div!
+        // RGMII uses internal GTX_CLK generation (125MHz for 1000Mbps)
+        // which is derived from the system clock, not the ETH0 clock setting.
+        // Only clock_add_to_group is needed (done above via add_resource_group).
+
+        let regs = T::info().regs;
+
+        #[cfg(feature = "defmt")]
+        defmt::debug!("RGMII: configure_rgmii");
+        // IMPORTANT: Configure PHY_INF_SEL BEFORE IOMUX to avoid RGMII glitch
+        // (Per C SDK comment: "should be set before config IOMUX, otherwise may cause glitch for RGMII")
+        Self::configure_rgmii(regs, tx_delay, rx_delay);
+
+        #[cfg(feature = "defmt")]
+        defmt::debug!("RGMII: configure pins");
+        // Now configure RGMII pins AFTER PHY_INF_SEL is set
+        rx_ctl.ioc_pad().func_ctl().write(|w| w.set_alt_select(rx_ctl.alt_num()));
+        rxd0.ioc_pad().func_ctl().write(|w| w.set_alt_select(rxd0.alt_num()));
+        rxd1.ioc_pad().func_ctl().write(|w| w.set_alt_select(rxd1.alt_num()));
+        rxd2.ioc_pad().func_ctl().write(|w| w.set_alt_select(rxd2.alt_num()));
+        rxd3.ioc_pad().func_ctl().write(|w| w.set_alt_select(rxd3.alt_num()));
+        rx_clk.ioc_pad().func_ctl().write(|w| w.set_alt_select(rx_clk.alt_num()));
+        tx_clk.ioc_pad().func_ctl().write(|w| w.set_alt_select(tx_clk.alt_num()));
+        txd0.ioc_pad().func_ctl().write(|w| w.set_alt_select(txd0.alt_num()));
+        txd1.ioc_pad().func_ctl().write(|w| w.set_alt_select(txd1.alt_num()));
+        txd2.ioc_pad().func_ctl().write(|w| w.set_alt_select(txd2.alt_num()));
+        txd3.ioc_pad().func_ctl().write(|w| w.set_alt_select(txd3.alt_num()));
+        tx_en.ioc_pad().func_ctl().write(|w| w.set_alt_select(tx_en.alt_num()));
+        mdio.ioc_pad().func_ctl().write(|w| w.set_alt_select(mdio.alt_num()));
+        mdc.ioc_pad().func_ctl().write(|w| w.set_alt_select(mdc.alt_num()));
+
+        #[cfg(feature = "defmt")]
+        defmt::debug!("RGMII: init_dma_no_start");
+        // Initialize DMA but DON'T start it yet (MAC must be configured first)
+        let (tx, rx) = Self::init_dma_no_start(regs, queue, config.dma_pbl);
+
+        #[cfg(feature = "defmt")]
+        defmt::debug!("RGMII: configure_mac_rgmii");
+        // Configure MAC BEFORE starting DMA (use RGMII-specific config)
+        Self::configure_mac_rgmii(regs, &config);
+
+        #[cfg(feature = "defmt")]
+        defmt::debug!("RGMII: enabling MAC TX/RX");
+        // Start MAC transmitter and receiver
+        regs.maccfg().modify(|w| {
+            w.set_te(true);
+            w.set_re(true);
+        });
+
+        #[cfg(feature = "defmt")]
+        defmt::debug!("RGMII: waiting for DMA status to clear before starting");
+        // Wait for DMA_STATUS bits [1:0] to clear before enabling ST+SR
+        // (matching C SDK enet_mode_init behavior)
+        // bit 0 = TI (Transmit Interrupt), bit 1 = TPS (Transmit Process Stopped)
+        let mut timeout = 100_000u32;
+        while (regs.dma_status().read().0 & 0x3) != 0 {
+            timeout -= 1;
+            if timeout == 0 {
+                #[cfg(feature = "defmt")]
+                defmt::warn!("DMA status timeout, continuing anyway");
+                break;
+            }
+        }
+
+        #[cfg(feature = "defmt")]
+        defmt::debug!("RGMII: starting DMA");
+        // Start DMA after MAC is configured
+        regs.dma_op_mode().modify(|w| {
+            w.set_st(true);
+            w.set_sr(true);
+        });
+
+        #[cfg(feature = "defmt")]
+        defmt::debug!("RGMII: clearing pending DMA interrupts");
+        // Clear any pending DMA interrupts before enabling CPU interrupt
+        regs.dma_status().write(|w| {
+            w.set_nis(true);
+            w.set_ais(true);
+            w.set_ri(true);
+            w.set_ti(true);
+            w.set_ru(true);
+            w.set_tu(true);
+        });
+
+        #[cfg(feature = "defmt")]
+        defmt::debug!("RGMII: unpending CPU interrupt");
+        // Enable CPU interrupts
+        T::Interrupt::unpend();
+
+        // NOTE: CPU interrupt is DISABLED for RGMII mode
+        // The ENET interrupt is level-triggered and causes interrupt storms
+        // when RX descriptors are unavailable (RS=4). Instead, embassy-net
+        // uses polling via the waker mechanism.
+        #[cfg(feature = "defmt")]
+        defmt::info!("RGMII: CPU interrupt DISABLED (using polling)");
+
+        #[cfg(feature = "defmt")]
+        defmt::debug!("RGMII: interrupt enabled, init complete");
+
+        // Set default link state to up (100Mbps Full Duplex)
+        let state = T::state();
+        state.link_up.store(true, Ordering::Relaxed);
+        state.speed.store(100, Ordering::Relaxed);
+
+        #[cfg(feature = "defmt")]
+        defmt::info!("ENET: RGMII initialized with tx_delay={}, rx_delay={}", tx_delay, rx_delay);
+
+        Self {
+            _peri: peri,
+            tx,
+            rx,
+            mac_addr: config.mac_addr,
+        }
+    }
+
     fn reset(regs: pac::enet::Enet) {
         // Software reset
         regs.dma_bus_mode().modify(|w| w.set_swr(true));
@@ -387,9 +520,66 @@ impl<'d, T: Instance> Ethernet<'d, T> {
 
         // Configure MAC: 100Mbps, Full duplex, RMII
         regs.maccfg().modify(|w| {
-            w.set_ps(true);   // Port Select: 10/100Mbps
+            w.set_ps(true);   // Port Select: 10/100Mbps (MII/RMII)
             w.set_fes(true);  // Speed: 100Mbps
             w.set_dm(true);   // Full duplex
+        });
+
+        // Configure frame filter: promiscuous mode
+        regs.macff().modify(|w| {
+            w.set_ra(true);   // Receive all
+            w.set_pm(true);   // Pass multicast
+            w.set_pr(true);   // Promiscuous mode
+        });
+
+        // Configure flow control (disabled)
+        regs.flowctrl().write(|w| {
+            w.set_pt(0);
+            w.set_dzpq(true);
+            w.set_plt(0);
+            w.set_up(false);
+            w.set_rfe(false);
+            w.set_tfe(false);
+            w.set_fcb_bpa(false);
+        });
+    }
+
+    /// Configure MAC for RGMII mode (1000Mbps or 100Mbps)
+    #[cfg(hpm6e)]
+    fn configure_mac_rgmii(regs: pac::enet::Enet, config: &Config) {
+        // Set MAC address
+        let mac = &config.mac_addr;
+        regs.mac_addr_0_high().write(|w| {
+            w.set_addrhi((mac[5] as u16) << 8 | mac[4] as u16);
+        });
+        regs.mac_addr_0_low().write(|w| {
+            w.0 = (mac[3] as u32) << 24
+                | (mac[2] as u32) << 16
+                | (mac[1] as u32) << 8
+                | mac[0] as u32;
+        });
+
+        // Configure MAC for RGMII 1000Mbps
+        // According to C SDK enet_set_line_speed():
+        // - 1000Mbps: PS=0, FES=0 (enet_line_speed_1000mbps = 0)
+        // - 100Mbps:  PS=1, FES=1 (enet_line_speed_100mbps = 3)
+        // - 10Mbps:   PS=1, FES=0 (enet_line_speed_10mbps = 2)
+        regs.maccfg().modify(|w| {
+            w.set_ps(false);  // PS=0 for 1000Mbps (Gigabit mode)
+            w.set_fes(false); // FES=0 for 1000Mbps
+            w.set_dm(true);   // Full duplex
+        });
+        // Set IFG (Inter-Frame Gap): 2 for full duplex, 4 for half duplex
+        // IFG bits are [19:17], value 2 means 72 bit times
+        regs.maccfg().modify(|w| {
+            w.set_ifg(2);     // IFG=2 for full duplex (CRITICAL for TX!)
+        });
+
+        // Set SARC (Source Address Replacement Control)
+        // 0b011 = Replace source address with MAC Address 0
+        // This is CRITICAL for TX - without this, MAC may not transmit!
+        regs.maccfg().modify(|w| {
+            w.set_sarc(3);    // replace_mac0
         });
 
         // Configure frame filter: promiscuous mode
@@ -414,13 +604,17 @@ impl<'d, T: Instance> Ethernet<'d, T> {
     fn init_dma_no_start<const TX_COUNT: usize, const RX_COUNT: usize>(
         regs: pac::enet::Enet,
         queue: &'d mut PacketQueue<TX_COUNT, RX_COUNT>,
-        _pbl: u8,
+        pbl: u8,
     ) -> (TxRing<'d>, RxRing<'d>) {
+        #[cfg(feature = "defmt")]
+        defmt::debug!("DMA: waiting for clock stabilize");
         // Wait for clock to stabilize before DMA reset
         for _ in 0..1_000_000 {
             core::hint::spin_loop();
         }
 
+        #[cfg(feature = "defmt")]
+        defmt::debug!("DMA: starting software reset");
         // DMA software reset
         regs.dma_bus_mode().modify(|w| w.set_swr(true));
         let mut timeout = 10_000_000u32;
@@ -432,14 +626,23 @@ impl<'d, T: Instance> Ethernet<'d, T> {
                 break;
             }
         }
+        #[cfg(feature = "defmt")]
+        defmt::debug!("DMA: reset complete, timeout_remaining={}", timeout);
 
-        // Configure DMA bus mode (8-word descriptors)
+        #[cfg(feature = "defmt")]
+        defmt::debug!("DMA: configuring bus mode, pbl={}", pbl);
+        // Configure DMA bus mode (matching C SDK)
         regs.dma_bus_mode().modify(|w| {
             w.set_atds(true);   // 8-word descriptors
             w.set_pblx8(true);  // PBL x 8 mode
             w.set_aal(true);    // Address aligned beats
+            w.set_pbl(pbl);     // Programmable burst length
+            w.set_usp(false);   // Don't use separate PBL for TX/RX
+            w.set_fb(false);    // Fixed burst disabled
         });
 
+        #[cfg(feature = "defmt")]
+        defmt::debug!("DMA: configuring AXI mode");
         // Configure AXI burst length
         regs.dma_axi_mode().modify(|w| {
             w.set_blen4(true);
@@ -451,6 +654,11 @@ impl<'d, T: Instance> Ethernet<'d, T> {
         let rx_desc_base = queue.rx_desc.as_ptr();
         let rx_buf_base = queue.rx_buf.as_ptr();
 
+        #[cfg(feature = "defmt")]
+        defmt::debug!("DMA: TX desc base=0x{:08X}, RX desc base=0x{:08X}", tx_desc_base as u32, rx_desc_base as u32);
+
+        #[cfg(feature = "defmt")]
+        defmt::debug!("DMA: initializing TX descriptors");
         // Initialize TX descriptors
         for i in 0..TX_COUNT {
             let desc = &mut queue.tx_desc[i];
@@ -465,6 +673,8 @@ impl<'d, T: Instance> Ethernet<'d, T> {
             }
         }
 
+        #[cfg(feature = "defmt")]
+        defmt::debug!("DMA: initializing RX descriptors");
         // Initialize RX descriptors (direct writes to avoid cache issues)
         for i in 0..RX_COUNT {
             let buf_addr = unsafe { rx_buf_base.add(i) as u32 };
@@ -479,9 +689,14 @@ impl<'d, T: Instance> Ethernet<'d, T> {
             }
         }
 
+        #[cfg(feature = "defmt")]
+        defmt::debug!("DMA: setting descriptor list addresses");
         // Set descriptor list addresses
         regs.dma_tx_desc_list_addr().write(|w| w.0 = tx_desc_base as u32);
         regs.dma_rx_desc_list_addr().write(|w| w.0 = rx_desc_base as u32);
+
+        #[cfg(feature = "defmt")]
+        defmt::debug!("DMA: init_dma_no_start complete");
 
         // Configure DMA operation mode
         regs.dma_op_mode().modify(|w| {
@@ -543,39 +758,80 @@ impl<'d, T: Instance> Ethernet<'d, T> {
         )
     }
 
+    /// Configure RMII mode for HPM6300 series
+    /// PHY_INF_SEL: 000=MII, 001=RGMII, 100=RMII
     #[cfg(hpm63)]
     fn configure_rmii(regs: pac::enet::Enet, internal_refclk: bool) {
-        const PHY_INF_SEL_MASK: u32 = 0xE000; // bits 15:13
-        const PHY_INF_SEL_SHIFT: u32 = 13;
-        const RMII_TXCLK_SEL: u32 = 1 << 10;
-        const REFCLK_OE: u32 = 1 << 19;
-
         regs.ctrl2().modify(|w| {
-            w.0 = (w.0 & !PHY_INF_SEL_MASK) | (4 << PHY_INF_SEL_SHIFT); // RMII mode
-            w.0 |= RMII_TXCLK_SEL;
-            if internal_refclk {
-                w.0 |= REFCLK_OE;
-            } else {
-                w.0 &= !REFCLK_OE;
-            }
+            w.set_enet0_phy_inf_sel(0b100); // RMII mode
+            w.set_enet0_rmii_txclk_sel(true);
+            w.set_enet0_refclk_oe(internal_refclk);
         });
     }
 
-    #[cfg(not(hpm63))]
+    /// Configure RMII mode for HPM6E00 series
+    /// PHY_INF_SEL: 000=MII, 001=RGMII, 100=RMII
+    #[cfg(hpm6e)]
+    fn configure_rmii(regs: pac::enet::Enet, internal_refclk: bool) {
+        regs.ctrl2().modify(|w| {
+            w.set_enet0_phy_inf_sel(0b100); // RMII mode
+            w.set_enet0_rmii_txclk_sel(true);
+            w.set_enet0_refclk_oe(internal_refclk);
+        });
+    }
+
+    #[cfg(not(any(hpm63, hpm6e)))]
     fn configure_rmii(_regs: pac::enet::Enet, _internal_refclk: bool) {
         // Other chip variants may have different RMII configuration
+    }
+
+    /// Configure RGMII mode for HPM6E00 series
+    /// tx_delay and rx_delay: 0-63, typical values depend on PHY and board
+    /// PHY_INF_SEL: 000=MII, 001=RGMII, 100=RMII
+    #[cfg(hpm6e)]
+    fn configure_rgmii(regs: pac::enet::Enet, tx_delay: u8, rx_delay: u8) {
+        // CTRL0: RGMII clock delay configuration (0-63)
+        regs.ctrl0().modify(|w| {
+            w.set_enet0_txclk_dly_sel(tx_delay & 0x3F);
+            w.set_enet0_rxclk_dly_sel(rx_delay & 0x3F);
+        });
+
+        // CTRL2: Interface selection
+        regs.ctrl2().modify(|w| {
+            w.set_enet0_phy_inf_sel(0b001); // RGMII mode
+            w.set_enet0_rmii_txclk_sel(false); // Not used for RGMII
+        });
     }
 
     /// Configure ETH clock for HPM6300 series (PLL2CLK1 / 9 ≈ 50MHz)
     #[cfg(hpm63)]
     fn configure_eth_clock_hpm63() {
         use crate::pac::SYSCTL;
-        
+
         SYSCTL.clock(crate::pac::clocks::ETH0).modify(|w| {
             w.set_mux(crate::pac::sysctl::vals::ClockMux::PLL2CLK1);
             w.set_div(8); // /9 ≈ 50MHz
         });
-        
+
+        while SYSCTL.clock(crate::pac::clocks::ETH0).read().loc_busy() {
+            core::hint::spin_loop();
+        }
+    }
+
+    /// Configure ETH clock for HPM6E00 series
+    /// For RGMII: Uses PLL clock directly
+    /// For RMII: PLL2CLK1 / divider ≈ 50MHz
+    #[cfg(hpm6e)]
+    fn configure_eth_clock_hpm6e() {
+        use crate::pac::SYSCTL;
+
+        // HPM6E00: ETH0 clock configuration
+        // Use PLL2CLK1 (~451MHz) as source
+        SYSCTL.clock(crate::pac::clocks::ETH0).modify(|w| {
+            w.set_mux(crate::pac::sysctl::vals::ClockMux::PLL2CLK1);
+            w.set_div(8); // /9 ≈ 50MHz for RMII, RGMII uses GTX_CLK from PHY
+        });
+
         while SYSCTL.clock(crate::pac::clocks::ETH0).read().loc_busy() {
             core::hint::spin_loop();
         }
@@ -650,6 +906,27 @@ impl<'d, T: Instance> Ethernet<'d, T> {
     }
 }
 
+/// Wake the RX and TX wakers for an ENET instance to trigger embassy-net polling.
+///
+/// This should be called periodically when interrupts are disabled.
+/// Typical usage: spawn a background task that calls this every 1-10ms.
+///
+/// # Example
+/// ```ignore
+/// #[embassy_executor::task]
+/// async fn enet_poll_task() -> ! {
+///     loop {
+///         enet::wake::<ENET0>();
+///         Timer::after(Duration::from_millis(1)).await;
+///     }
+/// }
+/// ```
+pub fn wake<T: Instance>() {
+    let state = T::state();
+    state.rx_waker.wake();
+    state.tx_waker.wake();
+}
+
 impl<'d> TxRing<'d> {
     fn available(&self) -> bool {
         // CRITICAL: Invalidate D-cache before reading OWN bit
@@ -680,9 +957,23 @@ impl<'d> TxRing<'d> {
         flush_dcache(desc_addr, 32);
         fence(Ordering::SeqCst);
 
+        // Debug: Read back TDES0 after flush
+        let tdes0_after = unsafe { core::ptr::read_volatile(desc_addr as *const u32) };
+        let tdes1_after = unsafe { core::ptr::read_volatile((desc_addr + 4) as *const u32) };
+        let tdes2_after = unsafe { core::ptr::read_volatile((desc_addr + 8) as *const u32) };
+        let tdes3_after = unsafe { core::ptr::read_volatile((desc_addr + 12) as *const u32) };
+
+        #[cfg(feature = "defmt")]
+        defmt::trace!("TX[{}] len={} desc=0x{:08X} TDES0=0x{:08X} TDES1=0x{:08X} TDES2=0x{:08X} TDES3=0x{:08X}",
+            self.index, len, desc_addr, tdes0_after, tdes1_after, tdes2_after, tdes3_after);
+
         // Restart TX DMA if stopped
         let status = self.regs.dma_status().read();
         let ts = (status.0 >> 20) & 0x7;
+
+        #[cfg(feature = "defmt")]
+        defmt::trace!("TX DMA status=0x{:08X} TS={}", status.0, ts);
+
         if ts == 0 {
             if status.fbi() {
                 self.regs.dma_status().write(|w| w.0 = 0xFFFF_FFFF);
@@ -695,6 +986,7 @@ impl<'d> TxRing<'d> {
         // Clear TU and poll transmit demand
         self.regs.dma_status().write(|w| w.0 = 1 << 2);
         self.regs.dma_tx_poll_demand().write(|w| w.0 = 1);
+
 
         self.index = (self.index + 1) % self.descriptors.len();
         Ok(())
@@ -716,21 +1008,21 @@ impl<'d> RxRing<'d> {
         loop {
             let desc_addr = &self.descriptors[self.index] as *const _ as u32;
             invalidate_dcache(desc_addr, 32);
-            
+
             let rdes0 = unsafe { core::ptr::read_volatile(desc_addr as *const u32) };
             let owned = (rdes0 & (1 << 31)) != 0;
             let has_error = (rdes0 & (1 << 15)) != 0;
-            
+
             if owned {
                 return false;
             }
-            
+
             if has_error {
                 // Skip error frames
                 self.release();
                 continue;
             }
-            
+
             return true;
         }
     }
@@ -741,7 +1033,7 @@ impl<'d> RxRing<'d> {
         invalidate_dcache(desc_addr, 32);
 
         let rdes0 = unsafe { core::ptr::read_volatile(desc_addr as *const u32) };
-        
+
         if rdes0 & (1 << 31) != 0 {
             return None; // Still owned by DMA
         }
@@ -752,9 +1044,11 @@ impl<'d> RxRing<'d> {
         }
 
         let len = ((rdes0 >> 16) & 0x3FFF) as usize;
-        let buf_addr = self.buffers[self.index].as_ptr() as u32;
-        invalidate_dcache(buf_addr, len as u32);
-        
+
+        // Read buffer address from descriptor (rdes2) and invalidate D-cache
+        let rdes2 = unsafe { core::ptr::read_volatile((desc_addr + 8) as *const u32) };
+        invalidate_dcache(rdes2, len as u32);
+
         Some((&self.buffers[self.index][..len], len))
     }
 
@@ -797,7 +1091,11 @@ impl<'a, 'd> embassy_net_driver::RxToken for RxToken<'a, 'd> {
         F: FnOnce(&mut [u8]) -> R,
     {
         if let Some((_ptr, len)) = self.rx.receive() {
-            let result = f(&mut self.rx.buffers[self.rx.index][..len]);
+            // CRITICAL: Use volatile copy to ensure we read actual DMA data
+            // Even in noncacheable region, Rust may not guarantee immediate visibility
+            let buf = &mut self.rx.buffers[self.rx.index][..len];
+
+            let result = f(buf);
             self.rx.release();
             result
         } else {
@@ -812,8 +1110,12 @@ impl<'a, 'd> embassy_net_driver::TxToken for TxToken<'a, 'd> {
     where
         F: FnOnce(&mut [u8]) -> R,
     {
+        #[cfg(feature = "defmt")]
+        defmt::debug!("TxToken::consume called, len={}", len);
+
         let buf = self.tx.buffer().expect("TxToken consumed but no buffer available");
         let result = f(&mut buf[..len]);
+
         self.tx.transmit(len).ok();
         result
     }
@@ -826,7 +1128,10 @@ impl<'d, T: Instance> embassy_net_driver::Driver for Ethernet<'d, T> {
     fn receive(&mut self, cx: &mut core::task::Context) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
         let state = T::state();
 
-        if self.rx.available() && self.tx.available() {
+        let rx_avail = self.rx.available();
+        let tx_avail = self.tx.available();
+
+        if rx_avail && tx_avail {
             Some((RxToken { rx: &mut self.rx }, TxToken { tx: &mut self.tx }))
         } else {
             state.rx_waker.register(cx.waker());
@@ -839,7 +1144,15 @@ impl<'d, T: Instance> embassy_net_driver::Driver for Ethernet<'d, T> {
 
         let avail = self.tx.available();
         #[cfg(feature = "defmt")]
-        defmt::trace!("Driver::transmit() called, tx.available()={}", avail);
+        {
+            static mut TX_REQ_COUNT: u32 = 0;
+            unsafe {
+                TX_REQ_COUNT += 1;
+                if TX_REQ_COUNT % 1000 == 1 {
+                    defmt::debug!("Driver::transmit called #{}, available={}", TX_REQ_COUNT, avail);
+                }
+            }
+        }
 
         if avail {
             Some(TxToken { tx: &mut self.tx })
@@ -936,6 +1249,45 @@ pub trait MdcPin<T: Instance>: crate::gpio::Pin {
     fn alt_num(&self) -> u8;
 }
 
+// ============================================================================
+// RGMII Pin traits (for HPM6E00 and other chips with RGMII support)
+// ============================================================================
+
+/// RGMII RX_CTL (RXDV) pin
+pub trait RgmiiRxCtlPin<T: Instance>: crate::gpio::Pin {
+    fn alt_num(&self) -> u8;
+}
+
+/// RGMII RXD2 pin
+pub trait Rxd2Pin<T: Instance>: crate::gpio::Pin {
+    fn alt_num(&self) -> u8;
+}
+
+/// RGMII RXD3 pin
+pub trait Rxd3Pin<T: Instance>: crate::gpio::Pin {
+    fn alt_num(&self) -> u8;
+}
+
+/// RGMII RX_CLK pin
+pub trait RxClkPin<T: Instance>: crate::gpio::Pin {
+    fn alt_num(&self) -> u8;
+}
+
+/// RGMII TX_CLK pin
+pub trait TxClkPin<T: Instance>: crate::gpio::Pin {
+    fn alt_num(&self) -> u8;
+}
+
+/// RGMII TXD2 pin
+pub trait Txd2Pin<T: Instance>: crate::gpio::Pin {
+    fn alt_num(&self) -> u8;
+}
+
+/// RGMII TXD3 pin
+pub trait Txd3Pin<T: Instance>: crate::gpio::Pin {
+    fn alt_num(&self) -> u8;
+}
+
 // Manual pin implementations for ENET0 on HPM6300 series
 // These should be auto-generated from hpm-data in the future
 
@@ -1013,6 +1365,45 @@ impl_enet_pin!(ENET0, PA23, TxEnPin, 18);
 impl_enet_pin!(ENET0, PA25, MdcPin, 19);
 #[cfg(peri_enet0)]
 impl_enet_pin!(ENET0, PA26, MdioPin, 19);
+
+// ============================================================================
+// ENET0 RGMII pins for HPM6E00 series (from pinmux.c)
+// PE20-PE31, PF00-PF01
+// ============================================================================
+
+// MDIO/MDC
+#[cfg(all(peri_enet0, hpm6e))]
+impl_enet_pin!(ENET0, PF00, MdcPin, 18);  // IOC_PF00_FUNC_CTL_ETH0_MDC
+#[cfg(all(peri_enet0, hpm6e))]
+impl_enet_pin!(ENET0, PF01, MdioPin, 18); // IOC_PF01_FUNC_CTL_ETH0_MDIO
+
+// RGMII RX pins
+#[cfg(all(peri_enet0, hpm6e))]
+impl_enet_pin!(ENET0, PE20, RgmiiRxCtlPin, 18); // ETH0_RXDV (RX_CTL)
+#[cfg(all(peri_enet0, hpm6e))]
+impl_enet_pin!(ENET0, PE21, Rxd0Pin, 18);       // ETH0_RXD_0
+#[cfg(all(peri_enet0, hpm6e))]
+impl_enet_pin!(ENET0, PE22, Rxd1Pin, 18);       // ETH0_RXD_1
+#[cfg(all(peri_enet0, hpm6e))]
+impl_enet_pin!(ENET0, PE23, Rxd2Pin, 18);       // ETH0_RXD_2
+#[cfg(all(peri_enet0, hpm6e))]
+impl_enet_pin!(ENET0, PE24, Rxd3Pin, 18);       // ETH0_RXD_3
+#[cfg(all(peri_enet0, hpm6e))]
+impl_enet_pin!(ENET0, PE25, RxClkPin, 18);      // ETH0_RXCK
+
+// RGMII TX pins
+#[cfg(all(peri_enet0, hpm6e))]
+impl_enet_pin!(ENET0, PE26, TxClkPin, 18);      // ETH0_TXCK
+#[cfg(all(peri_enet0, hpm6e))]
+impl_enet_pin!(ENET0, PE27, Txd0Pin, 18);       // ETH0_TXD_0
+#[cfg(all(peri_enet0, hpm6e))]
+impl_enet_pin!(ENET0, PE28, Txd1Pin, 18);       // ETH0_TXD_1
+#[cfg(all(peri_enet0, hpm6e))]
+impl_enet_pin!(ENET0, PE29, Txd2Pin, 18);       // ETH0_TXD_2
+#[cfg(all(peri_enet0, hpm6e))]
+impl_enet_pin!(ENET0, PE30, Txd3Pin, 18);       // ETH0_TXD_3
+#[cfg(all(peri_enet0, hpm6e))]
+impl_enet_pin!(ENET0, PE31, TxEnPin, 18);       // ETH0_TXEN
 
 // Instance implementation for ENET0
 #[cfg(peri_enet0)]
