@@ -397,6 +397,23 @@ fn main() {
         (("sdxc", "DATA5"), quote!(crate::sdxc::D5Pin)),
         (("sdxc", "DATA6"), quote!(crate::sdxc::D6Pin)),
         (("sdxc", "DATA7"), quote!(crate::sdxc::D7Pin)),
+        // ENET (Ethernet) - RMII signals
+        (("enet", "TXEN"), quote!(crate::enet::TxEnPin)),
+        (("enet", "TXD0"), quote!(crate::enet::Txd0Pin)),
+        (("enet", "TXD1"), quote!(crate::enet::Txd1Pin)),
+        (("enet", "RXDV"), quote!(crate::enet::CrsDvPin)),
+        (("enet", "RXD0"), quote!(crate::enet::Rxd0Pin)),
+        (("enet", "RXD1"), quote!(crate::enet::Rxd1Pin)),
+        (("enet", "REFCLK"), quote!(crate::enet::RefClkPin)),
+        (("enet", "MDIO"), quote!(crate::enet::MdioPin)),
+        (("enet", "MDC"), quote!(crate::enet::MdcPin)),
+        // ENET - RGMII additional signals
+        (("enet", "RXCK"), quote!(crate::enet::RxClkPin)),
+        (("enet", "TXCK"), quote!(crate::enet::TxClkPin)),
+        (("enet", "TXD2"), quote!(crate::enet::Txd2Pin)),
+        (("enet", "TXD3"), quote!(crate::enet::Txd3Pin)),
+        (("enet", "RXD2"), quote!(crate::enet::Rxd2Pin)),
+        (("enet", "RXD3"), quote!(crate::enet::Rxd3Pin)),
     ]
     .into();
 
@@ -506,6 +523,17 @@ fn main() {
                 }
 
                 // PDM D0-D3 data pins are handled above with deduplication
+
+                // ENET RXDV signal also implements RgmiiRxCtlPin for RGMII mode
+                // (CrsDvPin is already generated via the signals HashMap above)
+                if regs.kind == "enet" && pin.signal == "RXDV" {
+                    let peri = format_ident!("{}", p.name);
+                    let pin_name = format_ident!("{}", pin.pin);
+                    let alt = pin.alt.unwrap_or(0);
+                    g.extend(quote! {
+                        pin_trait_impl!(crate::enet::RgmiiRxCtlPin, #peri, #pin_name, #alt);
+                    });
+                }
 
                 // ACMP INP/INN pins are special - they have channel and input index
                 // Signal format: CMP{ch}_INP{input} or CMP{ch}_INN{input}
