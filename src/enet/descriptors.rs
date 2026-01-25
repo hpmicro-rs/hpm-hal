@@ -2,6 +2,12 @@
 //!
 //! HPM ENET uses standard DWMAC-style descriptors (4 words for normal, 8 words for PTP).
 //! This module implements the descriptor structures and packet queues.
+//!
+//! # Cache Alignment
+//!
+//! All descriptors and buffers are aligned to 64 bytes (cacheline size on Andes cores).
+//! This is critical for DMA coherency - each descriptor must occupy its own cacheline
+//! to prevent cache operations from affecting adjacent descriptors.
 
 use vcell::VolatileCell;
 
@@ -10,6 +16,12 @@ pub const TX_BUFFER_SIZE: usize = 1536;
 
 /// RX buffer size (MTU + headers)
 pub const RX_BUFFER_SIZE: usize = 1536;
+
+/// Descriptor size in memory (aligned to cacheline for DMA coherency)
+///
+/// Although the actual descriptor data is 32 bytes (8 x u32), each descriptor
+/// is aligned to 64 bytes (cacheline size) to ensure proper DMA coherency.
+pub const DESC_SIZE: usize = 64;
 
 // =============================================================================
 // TX Descriptor bit definitions
@@ -158,7 +170,10 @@ mod rdes1 {
 ///
 /// HPM6300 uses 8-word (32-byte) descriptors with ATDS=1.
 /// The extra words (tdes4-tdes7) are reserved for PTP timestamp.
-#[repr(C, align(32))]
+///
+/// Aligned to 64 bytes (cacheline) to ensure each descriptor occupies its own
+/// cacheline, preventing cache invalidation from affecting adjacent descriptors.
+#[repr(C, align(64))]
 pub struct TDes {
     /// TDES0: Status/Control
     tdes0: VolatileCell<u32>,
@@ -334,7 +349,10 @@ impl TDes {
 ///
 /// HPM6300 uses 8-word (32-byte) descriptors with ATDS=1.
 /// The extra words (rdes4-rdes7) are reserved for extended status and PTP timestamp.
-#[repr(C, align(32))]
+///
+/// Aligned to 64 bytes (cacheline) to ensure each descriptor occupies its own
+/// cacheline, preventing cache invalidation from affecting adjacent descriptors.
+#[repr(C, align(64))]
 pub struct RDes {
     /// RDES0: Status
     rdes0: VolatileCell<u32>,
@@ -489,12 +507,16 @@ impl<const N: usize> Packet<N> {
 /// On HPM MCUs, this should typically be placed in AXI_SRAM for uncached access,
 /// or with proper cache management if placed in cached memory.
 ///
+/// # Cache Alignment
+/// Aligned to 64 bytes (cacheline) to ensure proper DMA coherency.
+/// Each descriptor is also 64-byte aligned internally.
+///
 /// # Example
 /// ```rust,ignore
 /// #[link_section = ".noncacheable"]
 /// static mut PACKET_QUEUE: PacketQueue<4, 4> = PacketQueue::new();
 /// ```
-#[repr(C, align(32))]
+#[repr(C, align(64))]
 pub struct PacketQueue<const TX_COUNT: usize, const RX_COUNT: usize> {
     /// TX descriptors
     pub(crate) tx_desc: [TDes; TX_COUNT],
