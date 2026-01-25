@@ -1328,3 +1328,26 @@ impl SealedInstance for crate::peripherals::ENET0 {
 impl Instance for crate::peripherals::ENET0 {
     type Interrupt = crate::interrupt::typelevel::ENET0;
 }
+
+// Instance implementation for ENET1
+#[cfg(peri_enet1)]
+static ENET1_STATE: State = State::new();
+
+#[cfg(peri_enet1)]
+impl SealedInstance for crate::peripherals::ENET1 {
+    fn info() -> &'static Info {
+        static INFO: Info = Info {
+            regs: unsafe { pac::enet::Enet::from_ptr(pac::ENET1.as_ptr()) },
+        };
+        &INFO
+    }
+
+    fn state() -> &'static State {
+        &ENET1_STATE
+    }
+}
+
+#[cfg(peri_enet1)]
+impl Instance for crate::peripherals::ENET1 {
+    type Interrupt = crate::interrupt::typelevel::ENET1;
+}
