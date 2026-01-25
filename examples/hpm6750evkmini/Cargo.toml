@@ -53,7 +53,7 @@ static_cell = "2"
 microfft = "0.6.0"
 libm = "0.2"
 
-rw007 = { path = "../../../rw007", features = ["defmt", "async"] }
+rw007 = { version = "0.1", features = ["defmt", "async"] }
 
 # embassy-net dependencies
 embassy-net = { version = "0.8.0", features = ["dhcpv4", "proto-ipv4", "tcp", "udp", "dns", "medium-ethernet", "defmt"] }
