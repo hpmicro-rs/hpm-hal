@@ -560,11 +560,7 @@ impl<'a> Future for Transfer<'a> {
 
         state.waker.register(cx.waker());
 
-        let running = self.is_running();
-        if !running {
-        }
-
-        if running {
+        if self.is_running() {
             Poll::Pending
         } else {
             Poll::Ready(())

@@ -25,7 +25,7 @@
 mod descriptors;
 pub mod generic_smi;
 
-pub use descriptors::{PacketQueue, RX_BUFFER_SIZE, TX_BUFFER_SIZE};
+pub use descriptors::{PacketQueue, RX_BUFFER_SIZE, TX_BUFFER_SIZE, DESC_SIZE};
 pub use generic_smi::{GenericPhy, GenericSmi, SmiClockDivider, SmiError};
 
 use core::marker::PhantomData;
@@ -60,43 +60,57 @@ pub enum Error {
 //
 // CRITICAL: Even with PMA marking memory as noncacheable, the Andes D-Cache
 // requires explicit management for DMA coherency:
-// - CPU write -> DMA read: flush_dcache (L1D_VA_WB)
-// - DMA write -> CPU read: invalidate_dcache (L1D_VA_INVAL)
+// - CPU write -> DMA read: dc_writeback
+// - DMA write -> CPU read: dc_flush (writeback + invalidate)
+//
+// All descriptors and buffers are aligned to 64 bytes (cacheline size) to
+// ensure cache operations don't affect adjacent memory regions.
 // ============================================================================
 
+use andes_riscv::l1c;
+
+/// Cacheline size for HPM MCUs (Andes D45/D25 cores)
 const CACHELINE_SIZE: u32 = 64;
-const L1D_VA_WB: u32 = 1;       // Writeback by virtual address
-const L1D_VA_WBINVAL: u32 = 2;  // Writeback + Invalidate by virtual address
+
+/// Align address down to cacheline boundary
+#[inline]
+const fn cacheline_align_down(addr: u32) -> u32 {
+    addr & !(CACHELINE_SIZE - 1)
+}
+
+/// Align address up to cacheline boundary
+#[inline]
+const fn cacheline_align_up(addr: u32) -> u32 {
+    cacheline_align_down(addr + CACHELINE_SIZE - 1)
+}
 
 /// Flush D-cache for a memory region (CPU write -> DMA read)
+/// Writes back dirty cache lines to memory so DMA can read them.
 #[inline]
 fn flush_dcache(addr: u32, size: u32) {
-    let mut current = addr & !(CACHELINE_SIZE - 1);
-    let end = addr + size;
-    while current < end {
-        unsafe {
-            core::arch::asm!("csrw 0x7CB, {0}", in(reg) current); // MCCTLBEGINADDR
-            core::arch::asm!("csrw 0x7CC, {0}", in(reg) L1D_VA_WB); // MCCTLCOMMAND
-        }
-        current += CACHELINE_SIZE;
+    // Align address down and size up to cacheline boundaries
+    let aligned_addr = cacheline_align_down(addr);
+    let aligned_end = cacheline_align_up(addr + size);
+    let aligned_size = aligned_end - aligned_addr;
+    unsafe {
+        l1c::l1c_op(l1c::cctl_cmds::L1D_VA_WB, aligned_addr, aligned_size);
     }
-    core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+    fence(Ordering::SeqCst);
 }
 
 /// Invalidate D-cache for a memory region (DMA write -> CPU read)
-/// Uses WBINVAL to ensure any dirty cache lines are written back first
+/// Uses writeback + invalidate to ensure any dirty cache lines are written back first,
+/// then invalidates so CPU will read fresh data from memory.
 #[inline]
 fn invalidate_dcache(addr: u32, size: u32) {
-    let mut current = addr & !(CACHELINE_SIZE - 1);
-    let end = addr + size;
-    while current < end {
-        unsafe {
-            core::arch::asm!("csrw 0x7CB, {0}", in(reg) current); // MCCTLBEGINADDR
-            core::arch::asm!("csrw 0x7CC, {0}", in(reg) L1D_VA_WBINVAL); // Writeback + Invalidate
-        }
-        current += CACHELINE_SIZE;
+    // Align address down and size up to cacheline boundaries
+    let aligned_addr = cacheline_align_down(addr);
+    let aligned_end = cacheline_align_up(addr + size);
+    let aligned_size = aligned_end - aligned_addr;
+    unsafe {
+        l1c::l1c_op(l1c::cctl_cmds::L1D_VA_WBINVAL, aligned_addr, aligned_size);
     }
-    unsafe { core::arch::asm!("fence rw, rw") };
+    fence(Ordering::SeqCst);
 }
 
 /// Ethernet interface mode
@@ -724,8 +738,8 @@ impl<'d, T: Instance> Ethernet<'d, T> {
         }
 
         // Flush D-cache for descriptors
-        let tx_desc_total_size = (TX_COUNT * 32) as u32;
-        let rx_desc_total_size = (RX_COUNT * 32) as u32;
+        let tx_desc_total_size = (TX_COUNT * DESC_SIZE) as u32;
+        let rx_desc_total_size = (RX_COUNT * DESC_SIZE) as u32;
         flush_dcache(tx_desc_base as u32, tx_desc_total_size);
         flush_dcache(rx_desc_base as u32, rx_desc_total_size);
         unsafe { core::arch::asm!("fence rw, rw") };
@@ -932,8 +946,8 @@ impl<'d> TxRing<'d> {
         // CRITICAL: Invalidate D-cache before reading OWN bit
         // DMA may have cleared OWN after transmission complete
         let desc_addr = &self.descriptors[self.index] as *const _ as u32;
-        invalidate_dcache(desc_addr, 32);
-        
+        invalidate_dcache(desc_addr, DESC_SIZE as u32);
+
         !self.descriptors[self.index].is_owned()
     }
 
@@ -942,7 +956,7 @@ impl<'d> TxRing<'d> {
         let desc_addr = desc as *const _ as u32;
 
         // Invalidate before checking OWN (in case DMA finished)
-        invalidate_dcache(desc_addr, 32);
+        invalidate_dcache(desc_addr, DESC_SIZE as u32);
 
         if desc.is_owned() {
             return Err(Error::TxError);
@@ -954,7 +968,7 @@ impl<'d> TxRing<'d> {
 
         // Flush D-cache for TX buffer and descriptor
         flush_dcache(buf_addr, len as u32);
-        flush_dcache(desc_addr, 32);
+        flush_dcache(desc_addr, DESC_SIZE as u32);
         fence(Ordering::SeqCst);
 
         // Debug: Read back TDES0 after flush
@@ -1007,7 +1021,7 @@ impl<'d> RxRing<'d> {
         // DMA may have written to descriptor, CPU cache might be stale
         loop {
             let desc_addr = &self.descriptors[self.index] as *const _ as u32;
-            invalidate_dcache(desc_addr, 32);
+            invalidate_dcache(desc_addr, DESC_SIZE as u32);
 
             let rdes0 = unsafe { core::ptr::read_volatile(desc_addr as *const u32) };
             let owned = (rdes0 & (1 << 31)) != 0;
@@ -1030,7 +1044,7 @@ impl<'d> RxRing<'d> {
     fn receive(&mut self) -> Option<(&[u8], usize)> {
         let desc = &self.descriptors[self.index];
         let desc_addr = desc as *const _ as u32;
-        invalidate_dcache(desc_addr, 32);
+        invalidate_dcache(desc_addr, DESC_SIZE as u32);
 
         let rdes0 = unsafe { core::ptr::read_volatile(desc_addr as *const u32) };
 
@@ -1062,7 +1076,7 @@ impl<'d> RxRing<'d> {
         // CRITICAL: Flush D-cache after writing descriptor
         // CPU wrote descriptor, DMA needs to see updated values
         let desc_addr = desc as *const _ as u32;
-        flush_dcache(desc_addr, 32);
+        flush_dcache(desc_addr, DESC_SIZE as u32);
 
         // Poll receive demand
         self.regs.dma_rx_poll_demand().write(|w| w.0 = 1);
