@@ -9,14 +9,14 @@ This crate is a working-in-progress and not ready for production use.
 
 ### MCU Family Support
 
-| MCU Family | PAC | Demo | Embassy | SYSCTL | GPIO | UART | I2C | SPI | DMA | TMR | PWM | ADC | WDG | USB | CAN |
-| ---------- | --- | ---- | ------- | ------ | ---- | ---- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| HPM6700    | Y   | Y    | Y       | Y      | Y+   | Y+   | Y+  | Y+  | Y+  | ?   | Y   |     | Y   |     |     |
-| HPM6300    | Y   | Y    | Y       | Y      | Y+   | ?    | ?   | ?   | ?   | ?   | ?   |     | Y   |     |     |
-| HPM6200    | Y   | Y    | Y       | Y      | Y+   |      |     |     |     | ?   | ?   |     | Y   |     |     |
-| HPM5300    | Y   | Y    | Y       | Y      | Y+   | Y+   | Y+  | Y+  | Y+  | Y   | ?   | Y   | Y   | Y   | Y   |
-| HPM6800    | Y   |      |         |        |      |      |     |     |     | ?   | ?   |     | Y   |     |     |
-| HPM6E00    | Y   | Y    | Y       | Y      | Y+   | Y+   | Y+  | Y+  | Y+  | ?   | ?   |     | Y   | Y   | Y   |
+| MCU Family | PAC | Demo | Embassy | SYSCTL | GPIO | UART | I2C | SPI | DMA | TMR | PWM | ADC | WDG | USB | CAN | ENET |
+| ---------- | --- | ---- | ------- | ------ | ---- | ---- | --- | --- | --- | --- | --- | --- | --- | --- | --- | ---- |
+| HPM6700    | Y   | Y    | Y       | Y      | Y+   | Y+   | Y+  | Y+  | Y+  | ?   | Y   |     | Y   |     |     | Y+   |
+| HPM6300    | Y   | Y    | Y       | Y      | Y+   | ?    | ?   | ?   | ?   | ?   | ?   |     | Y   |     |     | Y+   |
+| HPM6200    | Y   | Y    | Y       | Y      | Y+   |      |     |     |     | ?   | ?   |     | Y   |     |     |      |
+| HPM5300    | Y   | Y    | Y       | Y      | Y+   | Y+   | Y+  | Y+  | Y+  | Y   | ?   | Y   | Y   | Y   | Y   |      |
+| HPM6800    | Y   |      |         |        |      |      |     |     |     | ?   | ?   |     | Y   |     |     |      |
+| HPM6E00    | Y   | Y    | Y       | Y      | Y+   | Y+   | Y+  | Y+  | Y+  | ?   | ?   |     | Y   | Y   | Y   | Y+   |
 
 - Y: Implemented
 - ?: Requires demo verification
@@ -89,6 +89,11 @@ This crate is a working-in-progress and not ready for production use.
   - [x] Device
   - [ ] Host
 - [x] XPI NOR flash driver using embedded-storage
+- [x] ENET (Ethernet)
+  - [x] RMII interface support
+  - [x] Generic PHY driver (RTL8201, etc.)
+  - [x] embassy-net integration
+  - [x] TCP/UDP via smoltcp
 - [x] RNG, in blocking mode
 - [x] CRC, with split pattern for multi-channel support
 - [x] ACMP (Analog Comparator)
