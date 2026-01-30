@@ -169,13 +169,21 @@ impl SampleRate {
     /// Get the PDM clock half divider (pdm_clk_hfdiv) for this sample rate
     ///
     /// Assumes MCLK = 24.576 MHz and CIC decimation ratio = 64
-    /// Formula: sample_rate = MCLK / (2 * (hfdiv + 1)) / cic_ratio / 3
+    ///
+    /// Formula varies by PDM version:
+    /// - PDM LITE (HPM6E00/HPM6P00): sample_rate = MCLK / (2 * (hfdiv + 1)) / cic_ratio
+    /// - Standard PDM (HPM6700/etc): sample_rate = MCLK / (2 * (hfdiv + 1)) / cic_ratio / 3
     pub(crate) const fn pdm_clk_hfdiv(self, cic_ratio: u8) -> u8 {
-        // MCLK = 24.576 MHz, DEC_AFTER_CIC = 3
-        // hfdiv = MCLK / (sample_rate * 2 * cic_ratio * 3) - 1
         const MCLK: u32 = 24_576_000;
-        const DEC_AFTER_CIC: u32 = 3;
-        let k = self.hz() * 2 * cic_ratio as u32 * DEC_AFTER_CIC;
+
+        // PDM LITE (HPM6E00, HPM6P00) does NOT have DEC_AFTER_CIC factor
+        // Standard PDM (HPM6700, HPM6800, HPM6300) has DEC_AFTER_CIC = 3
+        #[cfg(any(hpm6e, hpm6p))]
+        let k = self.hz() * 2 * cic_ratio as u32;
+
+        #[cfg(not(any(hpm6e, hpm6p)))]
+        let k = self.hz() * 2 * cic_ratio as u32 * 3; // DEC_AFTER_CIC = 3
+
         ((MCLK / k) - 1) as u8
     }
 
@@ -283,7 +291,10 @@ pub trait Instance: SealedInstance + PeripheralType + crate::sysctl::ClockPeriph
 
 // - MARK: Constants
 
-/// Decimation rate after CIC (fixed to 3)
+/// Decimation rate after CIC (only for standard PDM, not PDM LITE)
+/// Standard PDM (HPM6700/6800/6300) has DEC_AFTER_CIC = 3
+/// PDM LITE (HPM6E00/HPM6P00) does NOT have this factor
+#[cfg(pdm_v67)]
 const DEC_AFTER_CIC: u32 = 3;
 
 // - MARK: Driver
@@ -459,7 +470,8 @@ impl<'d, T: Instance> Pdm<'d, T> {
 
         // Configure control register
         // PDM_CLK_HFDIV calculated from sample rate
-        // sample_rate = MCLK / (2 * (div + 1)) / cic_dec_ratio / 3
+        // Standard PDM: sample_rate = MCLK / (2 * (div + 1)) / cic_dec_ratio / 3
+        // PDM LITE: sample_rate = MCLK / (2 * (div + 1)) / cic_dec_ratio
         let pdm_clk_hfdiv = self.config.sample_rate.pdm_clk_hfdiv(self.config.cic_decimation_ratio);
         regs.ctrl().write(|w| {
             // Note: HPF requires proper coefficient setup, skip for now
@@ -468,6 +480,8 @@ impl<'d, T: Instance> Pdm<'d, T> {
             w.set_pdm_clk_div_bypass(false);
             w.set_pdm_clk_hfdiv(pdm_clk_hfdiv);
             w.set_capt_dly(self.config.capture_delay);
+            // Standard PDM has DEC_AFT_CIC register, PDM LITE does not
+            #[cfg(pdm_v67)]
             w.set_dec_aft_cic(DEC_AFTER_CIC as u8);
         });
 
@@ -502,6 +516,10 @@ impl<'d, T: Instance> Pdm<'d, T> {
         // I2sClkMux::I2S0 means AUD0 clock (the naming is confusing in hardware)
         #[cfg(hpm67)]
         crate::sysctl::set_i2s_clock_source(0, crate::sysctl::I2sClkMux::I2S0);
+
+        // HPM6E00: set I2S0 to use AUD0 clock
+        #[cfg(hpm6e)]
+        crate::sysctl::set_i2s_clock_source(0, true);
 
         // Disable I2S first
         i2s.ctrl().modify(|w| w.set_i2s_en(false));
@@ -566,16 +584,20 @@ impl<'d, T: Instance> Pdm<'d, T> {
 
     /// Configure sample rate based on MCLK
     ///
-    /// Sample rate = MCLK / (2 * (div + 1)) / cic_dec_ratio / 3
+    /// Standard PDM: Sample rate = MCLK / (2 * (div + 1)) / cic_dec_ratio / 3
+    /// PDM LITE: Sample rate = MCLK / (2 * (div + 1)) / cic_dec_ratio
     ///
     /// Returns error if the calculated divider is out of range (1-15).
     pub fn set_sample_rate(&mut self, mclk_hz: u32, sample_rate: u32) -> Result<(), Error> {
         let cic_ratio = self.config.cic_decimation_ratio as u32;
 
         // Calculate required divider
-        // sample_rate = mclk / (2 * (div + 1)) / cic_ratio / 3
-        // div = mclk / (sample_rate * 2 * cic_ratio * 3) - 1
+        // Standard PDM: div = mclk / (sample_rate * 2 * cic_ratio * 3) - 1
+        // PDM LITE: div = mclk / (sample_rate * 2 * cic_ratio) - 1
+        #[cfg(pdm_v67)]
         let k = sample_rate * 2 * cic_ratio * DEC_AFTER_CIC;
+        #[cfg(pdm_v6e)]
+        let k = sample_rate * 2 * cic_ratio;
         let div = (mclk_hz + k / 2) / k; // Round to nearest
 
         if div < 2 || div > 16 {
@@ -793,6 +815,8 @@ impl<'d, T: Instance> PdmDma<'d, T> {
             w.set_pdm_clk_div_bypass(false);
             w.set_pdm_clk_hfdiv(pdm_clk_hfdiv);
             w.set_capt_dly(config.capture_delay);
+            // Standard PDM has DEC_AFT_CIC register, PDM LITE does not
+            #[cfg(pdm_v67)]
             w.set_dec_aft_cic(DEC_AFTER_CIC as u8);
         });
 
@@ -844,6 +868,10 @@ impl<'d, T: Instance> PdmDma<'d, T> {
         // Configure I2S0 clock source to AUD0
         #[cfg(hpm67)]
         crate::sysctl::set_i2s_clock_source(0, crate::sysctl::I2sClkMux::I2S0);
+
+        // HPM6E00: set I2S0 to use AUD0 clock
+        #[cfg(hpm6e)]
+        crate::sysctl::set_i2s_clock_source(0, true);
 
         i2s.ctrl().modify(|w| w.set_i2s_en(false));
 
@@ -965,6 +993,245 @@ impl<'d, T: Instance> PdmDma<'d, T> {
 }
 
 #[cfg(all(i2s, not(ip_feature_dma_v2)))]
+impl<T: Instance> Drop for PdmDma<'_, T> {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+// - MARK: DMA V2 PDM driver
+
+#[cfg(all(i2s, ip_feature_dma_v2))]
+use crate::dma::{self, Channel, ReadableRingBuffer, Request, TransferOptions};
+
+/// PDM driver with DMA ring buffer support (async) - DMA V2 version
+///
+/// This version uses DMA V2 circular mode for efficient data reception.
+#[cfg(all(i2s, ip_feature_dma_v2))]
+pub struct PdmDma<'d, T: Instance> {
+    _peri: Peri<'d, T>,
+    _i2s0: Peri<'d, crate::peripherals::I2S0>,
+    ringbuf: ReadableRingBuffer<'d, u32>,
+    #[allow(dead_code)]
+    config: Config,
+}
+
+#[cfg(all(i2s, ip_feature_dma_v2))]
+impl<'d, T: Instance> PdmDma<'d, T> {
+    /// Create a new PDM driver with DMA V2 support
+    ///
+    /// # Arguments
+    /// - `peri`: PDM peripheral
+    /// - `i2s0`: I2S0 peripheral (required, will be configured internally)
+    /// - `clk`: PDM clock pin
+    /// - `d0`: PDM data line 0 pin
+    /// - `dma_ch`: DMA channel for I2S0 RX
+    /// - `dma_buf`: DMA ring buffer (must remain valid)
+    /// - `config`: PDM configuration
+    ///
+    /// # Safety
+    /// The DMA buffer must remain valid for the lifetime of this driver.
+    pub unsafe fn new(
+        peri: Peri<'d, T>,
+        i2s0: Peri<'d, crate::peripherals::I2S0>,
+        clk: Peri<'d, impl ClkPin<T>>,
+        d0: Peri<'d, impl DPin<T>>,
+        dma_ch: Peri<'d, impl Channel>,
+        dma_buf: &'d mut [u32],
+        config: Config,
+    ) -> Self {
+        // Enable peripheral clocks
+        T::add_resource_group(0);
+        crate::sysctl::clock_add_to_group(crate::pac::resources::I2S0, 0);
+
+        // Configure pins
+        let clk_alt = clk.alt_num();
+        let d0_alt = d0.alt_num();
+        Pdm::<T>::configure_pin(&*clk, clk_alt);
+        Pdm::<T>::configure_pin(&*d0, d0_alt);
+
+        // Configure PDM registers
+        let pdm_regs = T::regs();
+        pdm_regs.run().modify(|w| w.set_pdm_en(false));
+
+        let pdm_clk_hfdiv = config.sample_rate.pdm_clk_hfdiv(config.cic_decimation_ratio);
+        pdm_regs.ctrl().write(|w| {
+            w.set_sof_fedge(config.sof_at_falling_edge);
+            w.set_pdm_clk_oe(config.enable_clock_output);
+            w.set_pdm_clk_div_bypass(false);
+            w.set_pdm_clk_hfdiv(pdm_clk_hfdiv);
+            w.set_capt_dly(config.capture_delay);
+            // Standard PDM has DEC_AFT_CIC register, PDM LITE does not
+            #[cfg(pdm_v67)]
+            w.set_dec_aft_cic(DEC_AFTER_CIC as u8);
+        });
+
+        pdm_regs.ch_ctrl().write(|w| {
+            w.set_ch_en(config.channels.0);
+            w.set_ch_pol(config.polarity.0);
+        });
+
+        pdm_regs.cic_cfg().write(|w| {
+            w.set_cic_dec_ratio(config.cic_decimation_ratio);
+            w.set_sgd(config.sigma_delta_order.to_pac());
+            w.set_post_scale(config.post_scale);
+        });
+
+        // Configure I2S0 for PDM reception
+        Self::configure_i2s0_for_pdm(&config);
+
+        // I2S0 RX DMA request number
+        // HPM6E00: I2S0 RX = DMAMUX source 0x40 (64)
+        const I2S0_RX_DMA_REQUEST: Request = 0x40;
+
+        // Get I2S0 RXD FIFO address
+        let i2s0_rxd_addr = crate::pac::I2S0.rxd(0).as_ptr() as *mut u32;
+
+        // Create DMA ring buffer (V2 doesn't need linked descriptor)
+        let ringbuf = ReadableRingBuffer::new(
+            dma_ch,
+            I2S0_RX_DMA_REQUEST,
+            i2s0_rxd_addr,
+            dma_buf,
+            TransferOptions::default(),
+        );
+
+        Self {
+            _peri: peri,
+            _i2s0: i2s0,
+            ringbuf,
+            config,
+        }
+    }
+
+    fn configure_i2s0_for_pdm(config: &Config) {
+        use crate::pac::i2s::vals::{ChannelSize, DataSize, Std};
+
+        let i2s = crate::pac::I2S0;
+
+        // HPM6E00: set I2S0 to use AUD0 clock
+        crate::sysctl::set_i2s_clock_source(0, true);
+
+        i2s.ctrl().modify(|w| w.set_i2s_en(false));
+
+        i2s.ctrl().modify(|w| {
+            w.set_sftrst_rx(true);
+            w.set_rxfifoclr(true);
+        });
+        i2s.ctrl().modify(|w| {
+            w.set_sftrst_rx(false);
+            w.set_rxfifoclr(false);
+        });
+
+        // Calculate BCLK divider from sample rate
+        let bclk_div = config.sample_rate.bclk_div();
+
+        i2s.cfgr().modify(|w| w.set_bclk_gateoff(true));
+        i2s.cfgr().modify(|w| {
+            w.set_bclk_div(bclk_div);
+            w.set_tdm_en(true);
+            w.set_ch_max(8);
+            w.set_datsiz(DataSize::_32BIT);
+            w.set_chsiz(ChannelSize::_32BIT);
+            w.set_std(Std::MSB);
+        });
+        i2s.cfgr().modify(|w| w.set_bclk_gateoff(false));
+
+        i2s.misc_cfgr().modify(|w| {
+            w.set_mclkoe(true);
+            w.set_mclk_gateoff(false);
+        });
+
+        i2s.rxdslot(0).write(|w| w.set_en(config.channels.0 as u16));
+
+        // Enable RX and RX DMA
+        i2s.ctrl().modify(|w| {
+            w.set_rx_en(1);
+            w.set_rx_dma_en(true); // Enable DMA request for RX
+        });
+    }
+
+    /// Start PDM and DMA reception
+    pub fn start(&mut self) {
+        // Start I2S
+        crate::pac::I2S0.ctrl().modify(|w| w.set_i2s_en(true));
+
+        // Start PDM
+        T::regs().run().modify(|w| w.set_pdm_en(true));
+
+        // Start DMA
+        self.ringbuf.start();
+    }
+
+    /// Stop PDM and DMA reception
+    pub fn stop(&mut self) {
+        self.ringbuf.request_pause();
+        T::regs().run().modify(|w| w.set_pdm_en(false));
+        crate::pac::I2S0.ctrl().modify(|w| w.set_i2s_en(false));
+    }
+
+    /// Clear the ring buffer (reset read position)
+    ///
+    /// Call this after an overrun error to resync with DMA.
+    pub fn clear(&mut self) {
+        self.ringbuf.clear();
+    }
+
+    /// Read samples from ring buffer
+    ///
+    /// Returns (samples_read, samples_remaining)
+    pub fn read(&mut self, buf: &mut [u32]) -> Result<(usize, usize), dma::ringbuffer::Error> {
+        self.ringbuf.read(buf)
+    }
+
+    /// Read exact number of samples (async)
+    pub async fn read_exact(&mut self, buf: &mut [u32]) -> Result<usize, dma::ringbuffer::Error> {
+        self.ringbuf.read_exact(buf).await
+    }
+
+    /// Get number of readable samples
+    pub fn len(&mut self) -> Result<usize, dma::ringbuffer::Error> {
+        self.ringbuf.len()
+    }
+
+    /// Get buffer capacity
+    pub const fn capacity(&self) -> usize {
+        self.ringbuf.capacity()
+    }
+
+    /// Clear PDM error flags
+    pub fn clear_errors(&mut self) {
+        let regs = T::regs();
+        regs.st().write(|w| {
+            w.set_cic_sat_err(true);
+            w.set_cic_ovld_err(true);
+            w.set_ofifo_ovfl_err(true);
+        });
+    }
+
+    /// Check for PDM errors
+    pub fn check_errors(&self) -> Result<(), Error> {
+        let st = T::regs().st().read();
+
+        if st.cic_sat_err() {
+            return Err(Error::CicSaturation);
+        }
+        if st.cic_ovld_err() {
+            return Err(Error::CicOverload);
+        }
+        if st.ofifo_ovfl_err() {
+            return Err(Error::FifoOverflow);
+        }
+        Ok(())
+    }
+
+    /// Check if DMA is running
+    pub fn is_running(&self) -> bool {
+        self.ringbuf.is_running()
+    }
+}
+
+#[cfg(all(i2s, ip_feature_dma_v2))]
 impl<T: Instance> Drop for PdmDma<'_, T> {
     fn drop(&mut self) {
         self.stop();
