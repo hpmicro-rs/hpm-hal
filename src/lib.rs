@@ -62,6 +62,8 @@ pub mod femc;
 pub mod ffa;
 #[cfg(i2s)]
 pub mod i2s;
+#[cfg(dao)]
+pub mod dao;
 #[cfg(pdm)]
 pub mod pdm;
 #[cfg(rtc)]
