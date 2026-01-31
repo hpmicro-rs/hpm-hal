@@ -414,6 +414,11 @@ fn main() {
         (("enet", "TXD3"), quote!(crate::enet::Txd3Pin)),
         (("enet", "RXD2"), quote!(crate::enet::Rxd2Pin)),
         (("enet", "RXD3"), quote!(crate::enet::Rxd3Pin)),
+        // DAO (Digital Audio Output)
+        (("dao", "RP"), quote!(crate::dao::RpPin)),
+        (("dao", "RN"), quote!(crate::dao::RnPin)),
+        (("dao", "LP"), quote!(crate::dao::LpPin)),
+        (("dao", "LN"), quote!(crate::dao::LnPin)),
     ]
     .into();
 
@@ -594,6 +599,8 @@ fn main() {
         (("i2c", "GLOBAL"), quote!(crate::i2c::I2cDma)),
         (("spi", "RX"), quote!(crate::spi::RxDma)),
         (("spi", "TX"), quote!(crate::spi::TxDma)),
+        (("i2s", "RX"), quote!(crate::i2s::RxDma)),
+        (("i2s", "TX"), quote!(crate::i2s::TxDma)),
     ]
     .into();
 

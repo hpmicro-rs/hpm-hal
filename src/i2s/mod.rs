@@ -38,7 +38,7 @@ pub enum Standard {
 }
 
 impl Standard {
-    fn to_pac(self) -> Std {
+    pub(crate) fn to_pac(self) -> Std {
         match self {
             Standard::Philips => Std::PHILIPS,
             Standard::MsbJustified => Std::MSB,
@@ -64,7 +64,7 @@ pub enum Format {
 }
 
 impl Format {
-    fn data_size(self) -> DataSize {
+    pub(crate) fn data_size(self) -> DataSize {
         match self {
             Format::Data16Channel16 | Format::Data16Channel32 => DataSize::_16BIT,
             Format::Data24Channel32 => DataSize::_24BIT,
@@ -72,7 +72,7 @@ impl Format {
         }
     }
 
-    fn channel_size(self) -> ChannelSize {
+    pub(crate) fn channel_size(self) -> ChannelSize {
         match self {
             Format::Data16Channel16 => ChannelSize::_16BIT,
             _ => ChannelSize::_32BIT,

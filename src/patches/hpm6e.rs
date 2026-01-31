@@ -28,3 +28,10 @@ impl crate::sysctl::SealedClockPeripheral for peripherals::ACMP3 {
     const SYSCTL_RESOURCE: usize = 324;
 }
 impl crate::sysctl::ClockPeripheral for peripherals::ACMP3 {}
+
+// DAO (Digital Audio Output) - uses CLSD (Class D) resource
+// Resource ID from HPM6E00 SDK: SYSCTL_RESOURCE_CLSD = 328
+impl crate::sysctl::SealedClockPeripheral for peripherals::DAO {
+    const SYSCTL_RESOURCE: usize = 328;
+}
+impl crate::sysctl::ClockPeripheral for peripherals::DAO {}
