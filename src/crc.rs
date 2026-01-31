@@ -34,6 +34,7 @@
 //! ```
 
 use core::marker::PhantomData;
+use core::ptr::write_volatile;
 
 use embassy_hal_internal::{Peri, PeripheralType};
 
@@ -293,6 +294,12 @@ impl<'d> CrcChannel<'d> {
         pac::CRC.chn(self.index as usize)
     }
 
+    /// Get the DATA register address for this channel.
+    #[inline]
+    fn data_addr(&self) -> *mut u32 {
+        self.regs().data().as_ptr() as *mut u32
+    }
+
     /// Configure this channel with the given CRC algorithm.
     pub fn configure(&mut self, config: Config) {
         let r = self.regs();
@@ -326,45 +333,60 @@ impl<'d> CrcChannel<'d> {
     }
 
     /// Feed a single byte into the CRC calculation.
+    ///
+    /// Uses 8-bit memory access to ensure the CRC hardware processes exactly one byte.
     #[inline]
     pub fn feed_byte(&mut self, data: u8) {
-        self.regs().data().write(|w| w.set_data(data as u32));
+        // IMPORTANT: CRC hardware determines how many bytes to process based on
+        // the memory access width. We must use 8-bit write for single bytes.
+        unsafe {
+            write_volatile(self.data_addr() as *mut u8, data);
+        }
     }
 
     /// Feed a byte slice into the CRC calculation.
+    ///
+    /// Uses appropriate memory access widths for optimal performance while
+    /// maintaining correct CRC calculation.
     pub fn feed_bytes(&mut self, data: &[u8]) {
-        let r = self.regs();
+        let addr = self.data_addr();
 
-        // Process 4 bytes at a time for efficiency
-        let mut chunks = data.chunks_exact(4);
-        for chunk in chunks.by_ref() {
-            let word = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
-            r.data().write(|w| w.set_data(word));
-        }
-
-        // Process remaining bytes
-        for &b in chunks.remainder() {
-            r.data().write(|w| w.set_data(b as u32));
+        // Process each byte individually using 8-bit writes
+        // This ensures the CRC hardware processes exactly one byte at a time
+        for &b in data {
+            unsafe {
+                write_volatile(addr as *mut u8, b);
+            }
         }
     }
 
     /// Feed a half-word (16-bit) into the CRC calculation.
+    ///
+    /// Uses 16-bit memory access to ensure the CRC hardware processes exactly two bytes.
     #[inline]
     pub fn feed_halfword(&mut self, data: u16) {
-        self.regs().data().write(|w| w.set_data(data as u32));
+        unsafe {
+            write_volatile(self.data_addr() as *mut u16, data);
+        }
     }
 
     /// Feed a word (32-bit) into the CRC calculation.
+    ///
+    /// Uses 32-bit memory access to ensure the CRC hardware processes exactly four bytes.
     #[inline]
     pub fn feed_word(&mut self, data: u32) {
-        self.regs().data().write(|w| w.set_data(data));
+        unsafe {
+            write_volatile(self.data_addr(), data);
+        }
     }
 
     /// Feed a word slice into the CRC calculation.
     pub fn feed_words(&mut self, data: &[u32]) {
-        let r = self.regs();
+        let addr = self.data_addr();
         for &word in data {
-            r.data().write(|w| w.set_data(word));
+            unsafe {
+                write_volatile(addr, word);
+            }
         }
     }
 
