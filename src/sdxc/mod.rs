@@ -59,6 +59,54 @@ pub use types::*;
 /// Frequency used for SD Card initialization. Must be no higher than 400 kHz.
 const SD_INIT_FREQ: Hertz = Hertz(400_000);
 
+/// Configure SYSCTL clock source for SDXC peripheral
+/// 
+/// For HPM67xx: Uses CLK_24M (24MHz crystal) with appropriate divider
+/// For HPM63xx/HPM68xx: Uses appropriate clock source based on target frequency
+fn configure_sysctl_clock<T: Instance>(target_freq: Hertz) {
+    use crate::sysctl::{ClockConfig, ClockPeripheral};
+    
+    #[cfg(sdxc_v67)]
+    {
+        use crate::pac::sysctl::vals::ClockMux;
+        
+        // HPM67xx: For init phase (<= 400kHz), use 24MHz crystal
+        // For higher speeds, use PLL1CLK1 (400MHz)
+        let cfg = if target_freq.0 <= 400_000 {
+            // 24MHz / 63 = ~380kHz (safe for init)
+            ClockConfig::new(ClockMux::CLK_24M, 63)
+        } else if target_freq.0 <= 26_000_000 {
+            // 24MHz / 1 = 24MHz (for SDR12/default speed)
+            ClockConfig::new(ClockMux::CLK_24M, 1)
+        } else {
+            // Use PLL1CLK1 (400MHz) for high speed modes
+            // The internal SDXC divider will further divide this
+            // 400MHz / 4 = 100MHz base, then SDXC divider for actual speed
+            ClockConfig::new(ClockMux::PLL1CLK1, 4)
+        };
+        
+        T::set_clock(cfg);
+    }
+    
+    #[cfg(any(sdxc_v63, sdxc_v68))]
+    {
+        use crate::pac::sysctl::vals::ClockMux;
+        
+        // HPM63xx/HPM68xx: Similar logic but may have different clock sources
+        let cfg = if target_freq.0 <= 400_000 {
+            // Use 24MHz / 60 = 400kHz for init
+            ClockConfig::new(ClockMux::CLK_24M, 60)
+        } else if target_freq.0 <= 26_000_000 {
+            ClockConfig::new(ClockMux::CLK_24M, 1)
+        } else {
+            // Use PLL for high speed
+            ClockConfig::new(ClockMux::PLL1CLK1, 4)
+        };
+        
+        T::set_clock(cfg);
+    }
+}
+
 // State and Info structures (following Embassy pattern)
 struct State {
     waker: AtomicWaker,
@@ -229,6 +277,10 @@ impl<'d, M: Mode> Sdxc<'d, M> {
     ) -> Self {
         // Add peripheral to resource group (enables clock)
         T::add_resource_group(0);
+        
+        // Configure SYSCTL clock source for init phase (~400kHz)
+        // This is required before accessing SDXC registers on HPM67xx
+        configure_sysctl_clock::<T>(SD_INIT_FREQ);
 
         let info = T::info();
         let state = T::state();
@@ -326,32 +378,57 @@ impl<'d, M: Mode> Sdxc<'d, M> {
     pub fn set_clock(&mut self, freq: Hertz) {
         let regs = self.info.regs;
 
-        // Calculate divider
-        let divider = (self.kernel_clock.0 / freq.0).max(1) - 1;
-        let divider = divider.min(1023) as u16;
-
         // Disable SD clock
         regs.sys_ctrl().modify(|w| w.set_sd_clk_en(false));
 
         // Set divider - different approach for different SDXC versions
         #[cfg(any(sdxc_v63, sdxc_v68))]
-        {
-            // HPM63xx/HPM68xx: Use MISC_CTRL0 software divider
+        let (divider, actual_clock) = {
+            // HPM63xx/HPM68xx: Use MISC_CTRL0 software divider (simple N+1 division)
+            let divider = (self.kernel_clock.0 / freq.0).max(1) - 1;
+            let divider = divider.min(1023) as u16;
             regs.misc_ctrl0().modify(|w| {
                 w.set_freq_sel_sw(divider);
                 w.set_freq_sel_sw_en(true);
             });
-        }
+            let actual = self.kernel_clock.0 / (divider as u32 + 1);
+            (divider, actual)
+        };
 
         #[cfg(sdxc_v67)]
-        {
+        let (divider, actual_clock) = {
             // HPM67xx/64xx: Use standard SD Host Controller clock divider
-            // FREQ_SEL is 8-bit (low) + UPPER_FREQ_SEL is 2-bit (high) = 10-bit total
+            // FREQ_SEL uses 2x division: actual_clock = base_clock / (2 * FREQ_SEL)
+            // FREQ_SEL=0 means full speed (no division)
+            // FREQ_SEL=N means divide by 2*N
+            //
+            // To get desired frequency: FREQ_SEL = base_clock / (2 * freq)
+            // Round up to ensure we don't exceed the target frequency
+            let divider = if freq.0 >= self.kernel_clock.0 {
+                0u16 // No division, full speed
+            } else {
+                // Calculate divider: FREQ_SEL = ceil(base_clock / (2 * freq))
+                let div = (self.kernel_clock.0 + 2 * freq.0 - 1) / (2 * freq.0);
+                div.min(1023) as u16
+            };
+
             regs.sys_ctrl().modify(|w| {
                 w.set_freq_sel((divider & 0xFF) as u8);
                 w.set_upper_freq_sel(((divider >> 8) & 0x3) as u8);
             });
-        }
+
+            // Calculate actual clock
+            let actual = if divider == 0 {
+                self.kernel_clock.0
+            } else {
+                self.kernel_clock.0 / (2 * divider as u32)
+            };
+            (divider, actual)
+        };
+
+        #[cfg(feature = "defmt")]
+        defmt::debug!("set_clock: kernel={} Hz, target={} Hz, divider={}, actual={} Hz",
+            self.kernel_clock.0, freq.0, divider, actual_clock);
 
         // Enable internal clock and wait for stable
         regs.sys_ctrl().modify(|w| w.set_internal_clk_en(true));
@@ -364,8 +441,8 @@ impl<'d, M: Mode> Sdxc<'d, M> {
         // Enable SD clock
         regs.sys_ctrl().modify(|w| w.set_sd_clk_en(true));
 
-        // Calculate actual clock
-        self.clock = Hertz(self.kernel_clock.0 / (divider as u32 + 1));
+        // Store actual clock
+        self.clock = Hertz(actual_clock);
     }
 
     /// Send 74+ clock cycles to activate card
@@ -791,6 +868,9 @@ impl<'d, M: Mode> Sdxc<'d, M> {
     pub fn init_sd_card(&mut self, freq: Hertz) -> Result<(), Error> {
         let regs = self.info.regs;
 
+        #[cfg(feature = "defmt")]
+        defmt::debug!("init_sd_card: kernel_clock={} Hz, target_freq={} Hz", self.kernel_clock.0, freq.0);
+
         // Clear all interrupt status
         regs.int_stat().write(|w| w.0 = 0xFFFFFFFF);
 
@@ -802,6 +882,8 @@ impl<'d, M: Mode> Sdxc<'d, M> {
 
         // Set 400kHz for identification
         self.set_clock(SD_INIT_FREQ);
+        #[cfg(feature = "defmt")]
+        defmt::debug!("init_sd_card: clock set to {} Hz", self.clock.0);
 
         // Send 74+ clock cycles
         self.wait_card_active();
@@ -813,26 +895,42 @@ impl<'d, M: Mode> Sdxc<'d, M> {
         }
 
         // CMD0: GO_IDLE_STATE
+        #[cfg(feature = "defmt")]
+        defmt::debug!("init_sd_card: sending CMD0 (GO_IDLE_STATE)");
         self.cmd(types::common_cmd::idle(), false)?;
+        #[cfg(feature = "defmt")]
+        defmt::debug!("init_sd_card: CMD0 OK");
 
         // CMD8: SEND_IF_COND
+        #[cfg(feature = "defmt")]
+        defmt::debug!("init_sd_card: sending CMD8 (SEND_IF_COND)");
         self.cmd(types::sd_cmd::send_if_cond(1, 0xAA), false)?;
         let cic = types::CIC::from(self.get_response());
+        #[cfg(feature = "defmt")]
+        defmt::debug!("init_sd_card: CMD8 response pattern=0x{:02X}", cic.pattern());
         if cic.pattern() != 0xAA {
             return Err(Error::UnsupportedCardVersion);
         }
 
         // ACMD41: SD_SEND_OP_COND (repeated until ready)
+        #[cfg(feature = "defmt")]
+        defmt::debug!("init_sd_card: starting ACMD41 loop");
         let mut ocr: types::OCR<types::SD>;
-        for _ in 0..1000 {
+        for i in 0..1000 {
             self.cmd(types::common_cmd::app_cmd(0), false)?;
             match self.cmd(types::sd_cmd::sd_send_op_cond(true, false, false, 0x1FF), false) {
                 Ok(_) | Err(Error::Crc) => {}
-                Err(e) => return Err(e),
+                Err(e) => {
+                    #[cfg(feature = "defmt")]
+                    defmt::error!("init_sd_card: ACMD41 error at iteration {}: {:?}", i, e);
+                    return Err(e);
+                }
             }
 
             ocr = self.get_response().into();
             if !ocr.is_busy() {
+                #[cfg(feature = "defmt")]
+                defmt::debug!("init_sd_card: card ready after {} ACMD41 iterations", i + 1);
                 // Card is ready (bit 31 = 1 means power up complete)
                 let card_type = if ocr.high_capacity() {
                     types::CardCapacity::HighCapacity
@@ -899,6 +997,8 @@ impl<'d, M: Mode> Sdxc<'d, M> {
             }
         }
 
+        #[cfg(feature = "defmt")]
+        defmt::error!("init_sd_card: ACMD41 timeout after 1000 iterations (card never became ready)");
         Err(Error::Timeout)
     }
 
@@ -1063,13 +1163,20 @@ impl<'d, M: Mode> Sdxc<'d, M> {
 }
 
 // Helper functions for pin configuration
+//
+// NOTE: Errata E00029 - IOC PAD_CTL register write restrictions
+// When the PE bit is 1, bit [3] must be set to 1,
+// and DS can only be 0b001 (low drive strength) or 0b110 (high drive strength).
+// We use DS=0b110 (6) for high drive strength required by SD card.
+
 fn configure_clk_pin<T: Instance>(pin: &impl ClkPin<T>) {
     pin.ioc_pad().func_ctl().write(|w| {
         w.set_alt_select(pin.alt_num());
         w.set_loop_back(true);
     });
+    // CLK pin: high drive strength, no pull (per C SDK)
     pin.ioc_pad().pad_ctl().write(|w| {
-        w.set_ds(7);
+        w.set_ds(6); // High drive strength (Errata E00029 compliant)
     });
 }
 
@@ -1078,13 +1185,14 @@ fn configure_cmd_pin<T: Instance>(pin: &impl CmdPin<T>) {
         w.set_alt_select(pin.alt_num());
         w.set_loop_back(true);
     });
+    // CMD pin: high drive strength, pull-up enabled (PE=1 requires bit[3]=1 per E00029)
+    // Errata E00029: When PE=1, write 0x08 (bit[3]=1) in addition to other settings
     pin.ioc_pad().pad_ctl().write(|w| {
-        w.set_ds(7);
-        w.set_pe(true);
-        w.set_ps(true);
-        // Note: SD spec requires open-drain during init for multi-card,
-        // but push-pull works for single card and is required for high-speed
-        w.set_od(false);
+        w.0 = (6 << 0) // DS=6 (high drive strength, E00029 compliant)
+            | (1 << 11) // PE=1 (pull enable)
+            | (1 << 3)  // bit[3]=1 (required by Errata E00029 when PE=1)
+            | (1 << 12) // PS=1 (pull-up select)
+            | (0 << 8); // OD=0 (push-pull, not open-drain)
     });
 }
 
@@ -1093,10 +1201,12 @@ fn configure_d0_pin<T: Instance>(pin: &impl D0Pin<T>) {
         w.set_alt_select(pin.alt_num());
         w.set_loop_back(true);
     });
+    // Data pin: high drive strength, pull-up enabled (E00029 compliant)
     pin.ioc_pad().pad_ctl().write(|w| {
-        w.set_ds(7);
-        w.set_pe(true);
-        w.set_ps(true);
+        w.0 = (6 << 0) // DS=6 (high drive strength)
+            | (1 << 11) // PE=1 (pull enable)
+            | (1 << 3)  // bit[3]=1 (Errata E00029)
+            | (1 << 12); // PS=1 (pull-up)
     });
 }
 
@@ -1105,10 +1215,12 @@ fn configure_d1_pin<T: Instance>(pin: &impl D1Pin<T>) {
         w.set_alt_select(pin.alt_num());
         w.set_loop_back(true);
     });
+    // Data pin: high drive strength, pull-up enabled (E00029 compliant)
     pin.ioc_pad().pad_ctl().write(|w| {
-        w.set_ds(7);
-        w.set_pe(true);
-        w.set_ps(true);
+        w.0 = (6 << 0) // DS=6 (high drive strength)
+            | (1 << 11) // PE=1 (pull enable)
+            | (1 << 3)  // bit[3]=1 (Errata E00029)
+            | (1 << 12); // PS=1 (pull-up)
     });
 }
 
@@ -1117,10 +1229,12 @@ fn configure_d2_pin<T: Instance>(pin: &impl D2Pin<T>) {
         w.set_alt_select(pin.alt_num());
         w.set_loop_back(true);
     });
+    // Data pin: high drive strength, pull-up enabled (E00029 compliant)
     pin.ioc_pad().pad_ctl().write(|w| {
-        w.set_ds(7);
-        w.set_pe(true);
-        w.set_ps(true);
+        w.0 = (6 << 0) // DS=6 (high drive strength)
+            | (1 << 11) // PE=1 (pull enable)
+            | (1 << 3)  // bit[3]=1 (Errata E00029)
+            | (1 << 12); // PS=1 (pull-up)
     });
 }
 
@@ -1129,10 +1243,12 @@ fn configure_d3_pin<T: Instance>(pin: &impl D3Pin<T>) {
         w.set_alt_select(pin.alt_num());
         w.set_loop_back(true);
     });
+    // Data pin: high drive strength, pull-up enabled (E00029 compliant)
     pin.ioc_pad().pad_ctl().write(|w| {
-        w.set_ds(7);
-        w.set_pe(true);
-        w.set_ps(true);
+        w.0 = (6 << 0) // DS=6 (high drive strength)
+            | (1 << 11) // PE=1 (pull enable)
+            | (1 << 3)  // bit[3]=1 (Errata E00029)
+            | (1 << 12); // PS=1 (pull-up)
     });
 }
 

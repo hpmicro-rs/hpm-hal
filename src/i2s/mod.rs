@@ -186,13 +186,8 @@ pub trait RxdPin<T: Instance>: crate::gpio::Pin {
 
 // - MARK: DMA traits
 
-/// Trait for I2S TX DMA
-#[allow(private_bounds)]
-pub trait TxDma<T: Instance>: crate::dma::Channel {}
-
-/// Trait for I2S RX DMA
-#[allow(private_bounds)]
-pub trait RxDma<T: Instance>: crate::dma::Channel {}
+dma_trait!(TxDma, Instance);
+dma_trait!(RxDma, Instance);
 
 // - MARK: Instance trait
 

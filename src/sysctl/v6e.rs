@@ -29,6 +29,10 @@ const PLL1CLK2_DEFAULT: Hertz = Hertz(250_000_000);
 const PLL2CLK0_DEFAULT: Hertz = Hertz(516_096_000);
 const PLL2CLK1_DEFAULT: Hertz = Hertz(451_584_000);
 
+// Audio clock defaults (PLL2CLK0 / 21 = 24.576MHz)
+// Used for I2S/PDM audio interfaces
+const AUD_CLK_DEFAULT: Hertz = Hertz(24_576_000);
+
 // Chip power-on state (before HAL init, after ROM boot)
 // CPU typically runs at 24MHz from OSC before preset is applied
 const CLK_CPU0_DEFAULT: Hertz = CLK_24M;
@@ -61,6 +65,8 @@ pub(crate) static mut CLOCKS: Clocks = Clocks {
     pll1clk2: PLL1CLK2_DEFAULT,
     pll2clk0: PLL2CLK0_DEFAULT,
     pll2clk1: PLL2CLK1_DEFAULT,
+    aud0: AUD_CLK_DEFAULT,
+    aud1: AUD_CLK_DEFAULT,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -79,6 +85,10 @@ pub struct Clocks {
     pub pll1clk2: Hertz,
     pub pll2clk0: Hertz,
     pub pll2clk1: Hertz,
+
+    // Audio clocks (for I2S/PDM)
+    pub aud0: Hertz,
+    pub aud1: Hertz,
 }
 
 impl Clocks {
@@ -164,6 +174,14 @@ pub struct Config {
 
     /// AHB clock configuration
     pub ahb: ClockConfig,
+
+    /// Audio clock 0 configuration (for I2S0/PDM)
+    /// Default: PLL2CLK0 / 21 = 24.576MHz
+    pub aud0: Option<ClockConfig>,
+
+    /// Audio clock 1 configuration (for I2S1)
+    /// Default: PLL2CLK0 / 21 = 24.576MHz
+    pub aud1: Option<ClockConfig>,
 }
 
 impl Default for Config {
@@ -173,12 +191,16 @@ impl Default for Config {
     /// - PLL0_CLK0 = 600MHz, PLL1_CLK0 = 800MHz
     /// - CPU0/CPU1 = 600MHz (PLL0_CLK0/1)
     /// - AHB = 200MHz (PLL1_CLK0/4)
+    /// - AUD0/AUD1 = 24.576MHz (PLL2CLK0/21) for audio
     fn default() -> Self {
         Self {
             preset: Some(ClockPreset::Preset1), // C SDK default
             cpu0: ClockConfig::new(ClockMux::PLL0CLK0, 1), // 600MHz
             cpu1: ClockConfig::new(ClockMux::PLL0CLK0, 1), // 600MHz
             ahb: ClockConfig::new(ClockMux::PLL1CLK0, 4),  // 800MHz / 4 = 200MHz
+            // Audio clocks: PLL2CLK0 (516.096MHz) / 21 = 24.576MHz
+            aud0: Some(ClockConfig::new(ClockMux::PLL2CLK0, 21)),
+            aud1: Some(ClockConfig::new(ClockMux::PLL2CLK0, 21)),
         }
     }
 }
@@ -195,6 +217,8 @@ impl Config {
             cpu0: ClockConfig::new(ClockMux::CLK_24M, 1), // 24MHz
             cpu1: ClockConfig::new(ClockMux::CLK_24M, 1), // 24MHz
             ahb: ClockConfig::new(ClockMux::CLK_24M, 1),  // 24MHz
+            aud0: None,
+            aud1: None,
         }
     }
 
@@ -203,12 +227,16 @@ impl Config {
     /// - Preset1: PLL0_CLK0 = 600MHz, PLL1_CLK0 = 800MHz
     /// - CPU0/CPU1 = 600MHz (PLL0_CLK0/1)
     /// - AHB = 200MHz (PLL1_CLK0/4)
+    /// - AUD0/AUD1 = 24.576MHz (PLL2CLK0/21)
     pub const fn high_performance() -> Self {
         Self {
             preset: Some(ClockPreset::Preset1),
             cpu0: ClockConfig::new(ClockMux::PLL0CLK0, 1), // 600MHz
             cpu1: ClockConfig::new(ClockMux::PLL0CLK0, 1), // 600MHz
             ahb: ClockConfig::new(ClockMux::PLL1CLK0, 4),  // 200MHz
+            // Audio clocks: PLL2CLK0 (516.096MHz) / 21 = 24.576MHz
+            aud0: Some(ClockConfig::new(ClockMux::PLL2CLK0, 21)),
+            aud1: Some(ClockConfig::new(ClockMux::PLL2CLK0, 21)),
         }
     }
 }
@@ -322,6 +350,11 @@ pub(crate) unsafe fn init(config: Config) {
     clock_add_to_group(pac::resources::XDMA, 0);
     clock_add_to_group(pac::resources::USB0, 0);
 
+    // Audio peripherals (I2S, PDM)
+    clock_add_to_group(pac::resources::I2S0, 0);
+    clock_add_to_group(pac::resources::I2S1, 0);
+    clock_add_to_group(pac::resources::PDM0, 0);
+
     // ENET clock
     clock_add_to_group(pac::resources::ETH0, 0);
     // PTPC (Precision Time Protocol Controller)
@@ -373,6 +406,14 @@ pub(crate) unsafe fn init(config: Config) {
     CLOCKS.cpu0 = cpu0_clk;
     CLOCKS.cpu1 = cpu1_clk;
     CLOCKS.ahb = ahb_clk;
+
+    // Configure audio clocks (AUD0/AUD1) for I2S/PDM
+    if let Some(ref aud0) = config.aud0 {
+        configure_audio_clock(0, aud0);
+    }
+    if let Some(ref aud1) = config.aud1 {
+        configure_audio_clock(1, aud1);
+    }
 }
 
 impl ops::Div<AhbDiv> for Hertz {
@@ -381,4 +422,106 @@ impl ops::Div<AhbDiv> for Hertz {
     fn div(self, rhs: AhbDiv) -> Hertz {
         Hertz(self.0 / (rhs as u32 + 1))
     }
+}
+
+// ============================================================================
+// Audio Clock Configuration
+// ============================================================================
+
+/// Configure audio clock (AUD0/AUD1)
+///
+/// Audio clocks are used by I2S and PDM peripherals.
+/// I2S uses a two-level mux: each I2S can select between AUD0 (shared) or AUDn (independent).
+///
+/// # Arguments
+/// - `aud_idx`: Audio clock index (0 or 1)
+/// - `cfg`: Clock configuration (source and divider)
+pub fn configure_audio_clock(aud_idx: usize, cfg: &ClockConfig) {
+    let clock_idx = pac::clocks::AUD0 + aud_idx;
+    SYSCTL.clock(clock_idx).modify(|w| {
+        w.set_mux(cfg.src);
+        w.set_div(cfg.raw_div);
+    });
+    while SYSCTL.clock(clock_idx).read().loc_busy() {}
+
+    // Update global clock state
+    let freq = unsafe { CLOCKS.get_freq(cfg) };
+    unsafe {
+        match aud_idx {
+            0 => CLOCKS.aud0 = freq,
+            1 => CLOCKS.aud1 = freq,
+            _ => {}
+        }
+    }
+}
+
+/// Get the current frequency of an audio clock
+///
+/// # Arguments
+/// - `aud_idx`: Audio clock index (0 or 1)
+///
+/// # Returns
+/// The current audio clock frequency in Hz
+pub fn get_audio_clock_freq(aud_idx: usize) -> Hertz {
+    unsafe {
+        match aud_idx {
+            0 => CLOCKS.aud0,
+            1 => CLOCKS.aud1,
+            _ => Hertz(0),
+        }
+    }
+}
+
+/// I2S clock source selection
+pub use crate::pac::sysctl::vals::I2sClkMux;
+
+/// Get the actual I2S MCLK frequency for a specific I2S instance
+///
+/// I2S clock selection (HPM6E00):
+/// - I2S0: mux=AUD0 uses AUD0, mux=AUD1 uses AUD1
+/// - I2S1: mux=AUD0 uses AUD1, mux=AUD1 uses AUD0
+///
+/// # Arguments
+/// - `i2s_idx`: I2S instance index (0 or 1)
+///
+/// # Returns
+/// The MCLK frequency used by the I2S instance
+pub fn get_i2s_clock_freq(i2s_idx: usize) -> Hertz {
+    if i2s_idx > 1 {
+        return Hertz(0);
+    }
+
+    let mux = SYSCTL.i2sclk(i2s_idx).read().mux();
+    unsafe {
+        match (i2s_idx, mux) {
+            (0, I2sClkMux::AUD0) => CLOCKS.aud0,
+            (0, I2sClkMux::AUD1) => CLOCKS.aud1,
+            (1, I2sClkMux::AUD0) => CLOCKS.aud1, // I2S1 uses AUD1 when mux=AUD0
+            (1, I2sClkMux::AUD1) => CLOCKS.aud0, // I2S1 uses AUD0 when mux=AUD1
+            _ => Hertz(0),
+        }
+    }
+}
+
+/// Set I2S clock source selection
+///
+/// # Arguments
+/// - `i2s_idx`: I2S instance index (0 or 1)
+/// - `use_aud0`: If true, use AUD0; if false, use AUD1 (for I2S0) or own AUDn (for I2S1)
+pub fn set_i2s_clock_source(i2s_idx: usize, use_aud0: bool) {
+    if i2s_idx > 1 {
+        return;
+    }
+
+    // For I2S0: mux=AUD0 means AUD0, mux=AUD1 means AUD1
+    // For I2S1: mux=AUD0 means AUD1, mux=AUD1 means AUD0
+    let mux = match (i2s_idx, use_aud0) {
+        (0, true) => I2sClkMux::AUD0,
+        (0, false) => I2sClkMux::AUD1,
+        (1, true) => I2sClkMux::AUD1,  // I2S1 uses AUD0 via mux=AUD1
+        (1, false) => I2sClkMux::AUD0, // I2S1 uses AUD1 via mux=AUD0
+        _ => I2sClkMux::AUD0,
+    };
+
+    SYSCTL.i2sclk(i2s_idx).modify(|w| w.set_mux(mux));
 }
