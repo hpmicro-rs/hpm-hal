@@ -755,7 +755,7 @@ pub fn demux_stereo(raw: &[u32], left: &mut [i32], right: &mut [i32]) {
 // - MARK: DMA-based PDM driver
 
 #[cfg(all(i2s, not(ip_feature_dma_v2)))]
-use crate::dma::{self, Channel, LinkedDescriptor, ReadableRingBuffer, Request};
+use crate::dma::{self, LinkedDescriptor, ReadableRingBuffer};
 
 /// PDM driver with DMA ring buffer support (async)
 ///
@@ -777,7 +777,7 @@ impl<'d, T: Instance> PdmDma<'d, T> {
     /// - `i2s0`: I2S0 peripheral (required, will be configured internally)
     /// - `clk`: PDM clock pin
     /// - `d0`: PDM data line 0 pin
-    /// - `dma_ch`: DMA channel for I2S0 RX
+    /// - `dma_ch`: DMA channel for I2S0 RX (must implement `RxDma<I2S0>`)
     /// - `dma_buf`: DMA ring buffer (must remain valid)
     /// - `dma_desc`: DMA linked descriptor (must remain valid, 8-byte aligned)
     /// - `config`: PDM configuration
@@ -789,7 +789,7 @@ impl<'d, T: Instance> PdmDma<'d, T> {
         i2s0: Peri<'d, crate::peripherals::I2S0>,
         clk: Peri<'d, impl ClkPin<T>>,
         d0: Peri<'d, impl DPin<T>>,
-        dma_ch: Peri<'d, impl Channel>,
+        dma_ch: Peri<'d, impl crate::i2s::RxDma<crate::peripherals::I2S0>>,
         dma_buf: &'d mut [u32],
         dma_desc: &'d mut LinkedDescriptor,
         config: Config,
@@ -834,10 +834,8 @@ impl<'d, T: Instance> PdmDma<'d, T> {
         // Configure I2S0 for PDM reception
         Self::configure_i2s0_for_pdm(&config);
 
-        // Get I2S0 RX DMA request number
-        // I2S0 RX = 0x28 (40) for HPM6750
-        // TODO: Get this from hpm-metapac when dma_channels is available
-        const I2S0_RX_DMA_REQUEST: Request = 0x28;
+        // Get I2S0 RX DMA request number from trait (auto-generated)
+        let i2s0_rx_request = dma_ch.request();
 
         // Get I2S0 RXD FIFO address
         let i2s0_rxd_addr = crate::pac::I2S0.rxd(0).as_ptr() as *mut u32;
@@ -845,7 +843,7 @@ impl<'d, T: Instance> PdmDma<'d, T> {
         // Create DMA ring buffer
         let ringbuf = ReadableRingBuffer::new(
             dma_ch,
-            I2S0_RX_DMA_REQUEST,
+            i2s0_rx_request,
             i2s0_rxd_addr,
             dma_buf,
             dma_desc,
@@ -1002,7 +1000,7 @@ impl<T: Instance> Drop for PdmDma<'_, T> {
 // - MARK: DMA V2 PDM driver
 
 #[cfg(all(i2s, ip_feature_dma_v2))]
-use crate::dma::{self, Channel, ReadableRingBuffer, Request, TransferOptions};
+use crate::dma::{self, ReadableRingBuffer, TransferOptions};
 
 /// PDM driver with DMA ring buffer support (async) - DMA V2 version
 ///
@@ -1025,7 +1023,7 @@ impl<'d, T: Instance> PdmDma<'d, T> {
     /// - `i2s0`: I2S0 peripheral (required, will be configured internally)
     /// - `clk`: PDM clock pin
     /// - `d0`: PDM data line 0 pin
-    /// - `dma_ch`: DMA channel for I2S0 RX
+    /// - `dma_ch`: DMA channel for I2S0 RX (must implement `RxDma<I2S0>`)
     /// - `dma_buf`: DMA ring buffer (must remain valid)
     /// - `config`: PDM configuration
     ///
@@ -1036,7 +1034,7 @@ impl<'d, T: Instance> PdmDma<'d, T> {
         i2s0: Peri<'d, crate::peripherals::I2S0>,
         clk: Peri<'d, impl ClkPin<T>>,
         d0: Peri<'d, impl DPin<T>>,
-        dma_ch: Peri<'d, impl Channel>,
+        dma_ch: Peri<'d, impl crate::i2s::RxDma<crate::peripherals::I2S0>>,
         dma_buf: &'d mut [u32],
         config: Config,
     ) -> Self {
@@ -1080,9 +1078,8 @@ impl<'d, T: Instance> PdmDma<'d, T> {
         // Configure I2S0 for PDM reception
         Self::configure_i2s0_for_pdm(&config);
 
-        // I2S0 RX DMA request number
-        // HPM6E00: I2S0 RX = DMAMUX source 0x40 (64)
-        const I2S0_RX_DMA_REQUEST: Request = 0x40;
+        // Get I2S0 RX DMA request number from trait (auto-generated)
+        let i2s0_rx_request = dma_ch.request();
 
         // Get I2S0 RXD FIFO address
         let i2s0_rxd_addr = crate::pac::I2S0.rxd(0).as_ptr() as *mut u32;
@@ -1090,7 +1087,7 @@ impl<'d, T: Instance> PdmDma<'d, T> {
         // Create DMA ring buffer (V2 doesn't need linked descriptor)
         let ringbuf = ReadableRingBuffer::new(
             dma_ch,
-            I2S0_RX_DMA_REQUEST,
+            i2s0_rx_request,
             i2s0_rxd_addr,
             dma_buf,
             TransferOptions::default(),
