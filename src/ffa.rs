@@ -11,6 +11,13 @@
 //! - FP32 (32-bit floating point) - HPM6E00 series
 //!
 //! FFT sizes: 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096 points
+//!
+//! # Example
+//!
+//! ```rust,ignore
+//! let mut ffa = Ffa::new(p.FFA);
+//! ffa.fft_complex_q31(&input, &mut output)?;
+//! ```
 
 use crate::pac::ffa::Ffa as FfaRegs;
 use embassy_hal_internal::{Peri, PeripheralType};
@@ -85,7 +92,7 @@ pub struct Ffa<'d, T: Instance> {
 }
 
 impl<'d, T: Instance> Ffa<'d, T> {
-    /// Create a new FFA driver
+    /// Create a new FFA driver.
     pub fn new(peri: Peri<'d, T>) -> Self {
         T::add_resource_group(0);
 
@@ -94,6 +101,9 @@ impl<'d, T: Instance> Ffa<'d, T> {
         // Software reset
         regs.ctrl().write(|w| w.set_sftrst(true));
         regs.ctrl().write(|w| w.set_sftrst(false));
+
+        // Disable all interrupts
+        regs.int_en().write(|w| w.0 = 0);
 
         Self { _peri: peri }
     }
@@ -126,7 +136,7 @@ impl<'d, T: Instance> Ffa<'d, T> {
         count
     }
 
-    /// Perform FFT on Q31 real data (blocking)
+    /// Perform FFT on Q31 real data
     ///
     /// Input: real Q31 samples
     /// Output: complex Q31 spectrum (N/2+1 complex values)
@@ -134,7 +144,7 @@ impl<'d, T: Instance> Ffa<'d, T> {
     /// # Arguments
     /// * `input` - Input real samples (must be power of 2, >= 8)
     /// * `output` - Output complex spectrum buffer
-    pub fn fft_q31_blocking(
+    pub fn fft_q31(
         &mut self,
         input: &[i32],
         output: &mut [ComplexQ31],
@@ -225,7 +235,7 @@ impl<'d, T: Instance> Ffa<'d, T> {
         Ok(())
     }
 
-    /// Perform FFT on complex Q31 data (blocking)
+    /// Perform FFT on complex Q31 data
     ///
     /// Input: complex Q31 samples
     /// Output: complex Q31 spectrum
@@ -237,7 +247,7 @@ impl<'d, T: Instance> Ffa<'d, T> {
     /// # Note
     /// Both input and output buffers should be 64-byte aligned for best performance.
     /// This function handles D-cache flush/invalidate automatically.
-    pub fn fft_complex_q31_blocking(
+    pub fn fft_complex_q31(
         &mut self,
         input: &[ComplexQ31],
         output: &mut [ComplexQ31],
@@ -340,7 +350,7 @@ impl<'d, T: Instance> Ffa<'d, T> {
         Ok(())
     }
 
-    /// Perform FFT on f32 real data (blocking) - HPM6E00 only
+    /// Perform FFT on f32 real data - HPM6E00 only
     ///
     /// Input: real f32 samples
     /// Output: complex f32 spectrum
@@ -350,7 +360,7 @@ impl<'d, T: Instance> Ffa<'d, T> {
     /// * `output` - Output complex spectrum buffer
     /// * `in_max` - Max exponent for input (ceil(log2(max(abs(input)))) - 1)
     /// * `out_max` - Max exponent for output
-    pub fn fft_f32_blocking(
+    pub fn fft_f32(
         &mut self,
         input: &[f32],
         output: &mut [ComplexF32],
@@ -434,8 +444,8 @@ impl<'d, T: Instance> Ffa<'d, T> {
         Ok(())
     }
 
-    /// Perform inverse FFT on complex Q31 data (blocking)
-    pub fn ifft_q31_blocking(
+    /// Perform inverse FFT on complex Q31 data
+    pub fn ifft_q31(
         &mut self,
         input: &[ComplexQ31],
         output: &mut [i32],
