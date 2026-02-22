@@ -14,7 +14,7 @@ panic-halt = "1.0.0"
 embedded-hal = "1.0.0"
 
 riscv = { version = "0.16.0", features = ["critical-section-single-hart"] }
-andes-riscv = "0.1.4"
+andes-riscv = "0.3"
 
 embassy-time = { version = "0.5.0", features = ["tick-hz-1_000_000"] }
 embassy-executor = { version = "0.9.1", features = [

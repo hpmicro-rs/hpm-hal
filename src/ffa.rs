@@ -360,6 +360,7 @@ impl<'d, T: Instance> Ffa<'d, T> {
     /// * `output` - Output complex spectrum buffer
     /// * `in_max` - Max exponent for input (ceil(log2(max(abs(input)))) - 1)
     /// * `out_max` - Max exponent for output
+    #[cfg(ip_feature_ffa_fp32)]
     pub fn fft_f32(
         &mut self,
         input: &[f32],

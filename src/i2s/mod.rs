@@ -5,11 +5,35 @@
 //! - TDM mode support
 //! - Master/Slave mode
 //! - DMA transfer support
+//!
+//! # DMA Support
+//!
+//! The I2S driver supports DMA for efficient audio streaming:
+//!
+//! ```ignore
+//! use hpm_hal::i2s::{I2STxDma, Config};
+//! use hpm_hal::dma::TransferOptions;
+//!
+//! // Create DMA buffer in noncacheable memory
+//! #[unsafe(link_section = ".noncacheable")]
+//! static mut DMA_BUF: [u32; 512] = [0u32; 512];
+//!
+//! let dma_buf = unsafe { &mut DMA_BUF };
+//! let i2s_tx = I2STxDma::new(
+//!     p.I2S1,
+//!     p.HDMA_CH0,
+//!     dma_buf,
+//!     config,
+//! );
+//! ```
 
 use embassy_hal_internal::{Peri, PeripheralType};
 
 use crate::pac::i2s::vals::{ChannelSize, DataSize, Std};
 use crate::pac::i2s::I2s;
+
+#[cfg(ip_feature_dma_v2)]
+use crate::dma::{self, Channel, TransferOptions, WritableRingBuffer};
 
 // - MARK: Config types
 
@@ -349,4 +373,156 @@ impl_i2s!(I2S1, I2S1);
 impl_i2s!(I2S2, I2S2);
 #[cfg(peri_i2s3)]
 impl_i2s!(I2S3, I2S3);
+
+// - MARK: I2S TX DMA Driver
+
+/// I2S TX with DMA support (memory to I2S peripheral)
+///
+/// This driver uses a ring buffer for continuous audio streaming.
+#[cfg(ip_feature_dma_v2)]
+pub struct I2STxDma<'d, T: Instance> {
+    _peri: Peri<'d, T>,
+    ringbuf: WritableRingBuffer<'d, u32>,
+    config: Config,
+}
+
+#[cfg(ip_feature_dma_v2)]
+impl<'d, T: Instance> I2STxDma<'d, T> {
+    /// Create a new I2S TX DMA driver
+    ///
+    /// # Arguments
+    /// * `peri` - I2S peripheral instance
+    /// * `dma_ch` - DMA channel with TX DMA capability
+    /// * `dma_buf` - DMA buffer (must be in noncacheable memory, 4-byte aligned)
+    /// * `config` - I2S configuration
+    pub fn new<DMA: Channel + TxDma<T>>(
+        peri: Peri<'d, T>,
+        dma_ch: Peri<'d, DMA>,
+        dma_buf: &'d mut [u32],
+        config: Config,
+    ) -> Self {
+        // Enable peripheral clock
+        T::add_resource_group(0);
+
+        let regs = T::regs();
+
+        // Disable I2S first
+        regs.ctrl().modify(|w| w.set_i2s_en(false));
+
+        // Reset TX
+        regs.ctrl().modify(|w| {
+            w.set_sftrst_tx(true);
+            w.set_txfifoclr(true);
+        });
+        regs.ctrl().modify(|w| {
+            w.set_sftrst_tx(false);
+            w.set_txfifoclr(false);
+        });
+
+        // Configure FIFO threshold
+        regs.fifo_thresh().modify(|w| {
+            w.set_tx(config.tx_fifo_threshold);
+            w.set_rx(config.rx_fifo_threshold);
+        });
+
+        // Configure I2S format
+        regs.cfgr().modify(|w| {
+            w.set_datsiz(config.format.data_size());
+            w.set_chsiz(config.format.channel_size());
+            w.set_std(config.standard.to_pac());
+            w.set_tdm_en(config.enable_tdm);
+            w.set_ch_max(config.channel_num);
+        });
+
+        // Configure MCLK output
+        regs.misc_cfgr().modify(|w| {
+            w.set_mclkoe(config.master_clock);
+        });
+
+        // Set slot mask for TX line 0
+        regs.txdslot(0).write(|w| w.set_en(config.channel_slot_mask as u16));
+
+        // Enable TX line 0 and TX DMA
+        regs.ctrl().modify(|w| {
+            w.set_tx_en(1); // Enable line 0
+            w.set_tx_dma_en(true); // Enable DMA request
+        });
+
+        // Get DMA request number
+        let request = dma_ch.request();
+
+        // Get I2S TXD FIFO address
+        let txd_addr = regs.txd(0).as_ptr() as *mut u32;
+
+        // Create DMA ring buffer
+        let ringbuf = unsafe {
+            WritableRingBuffer::new(dma_ch, request, dma_buf, txd_addr, TransferOptions::default())
+        };
+
+        Self {
+            _peri: peri,
+            ringbuf,
+            config,
+        }
+    }
+
+    /// Start I2S TX and DMA
+    pub fn start(&mut self) {
+        // Start DMA first
+        self.ringbuf.start();
+
+        // Enable I2S
+        T::regs().ctrl().modify(|w| w.set_i2s_en(true));
+    }
+
+    /// Stop I2S TX and DMA
+    pub fn stop(&mut self) {
+        self.ringbuf.request_pause();
+        T::regs().ctrl().modify(|w| w.set_i2s_en(false));
+    }
+
+    /// Clear the ring buffer
+    pub fn clear(&mut self) {
+        self.ringbuf.clear();
+    }
+
+    /// Write samples to the ring buffer
+    ///
+    /// Returns (samples_written, samples_remaining_to_write)
+    pub fn write(&mut self, buf: &[u32]) -> Result<(usize, usize), dma::ringbuffer::Error> {
+        self.ringbuf.write(buf)
+    }
+
+    /// Write all samples (async)
+    pub async fn write_exact(&mut self, buf: &[u32]) -> Result<usize, dma::ringbuffer::Error> {
+        self.ringbuf.write_exact(buf).await
+    }
+
+    /// Get available space in the buffer
+    pub fn len(&mut self) -> Result<usize, dma::ringbuffer::Error> {
+        self.ringbuf.len()
+    }
+
+    /// Get buffer capacity
+    pub const fn capacity(&self) -> usize {
+        self.ringbuf.capacity()
+    }
+
+    /// Check if DMA is running
+    pub fn is_running(&self) -> bool {
+        self.ringbuf.is_running()
+    }
+
+    /// Get current configuration
+    pub fn config(&self) -> &Config {
+        &self.config
+    }
+}
+
+#[cfg(ip_feature_dma_v2)]
+impl<T: Instance> Drop for I2STxDma<'_, T> {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
 

@@ -18,8 +18,8 @@ license = "MIT/Apache-2.0"
 # git snapshot
 hpm-metapac = { git = "https://github.com/hpmicro-rs/hpm-metapac.git", tag = "hpm-data-26d52cc9324f6c112021be5b45bc36bf0ef9f149" }
 
-hpm-riscv-rt = { version = "0.3.3", optional = true }
-andes-riscv = { version = "0.1.4" }
+hpm-riscv-rt = { version = "0.3", optional = true }
+andes-riscv = { version = "0.3" }
 
 riscv = { version = "0.16.0", features = ["critical-section-single-hart"] }
 riscv-pac = "0.3.0"

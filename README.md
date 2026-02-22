@@ -121,7 +121,7 @@ This crate is a working-in-progress and not ready for production use.
 - [probe-rs]
   - [x] [HPM5300 series flash algorithm support](https://github.com/probe-rs/probe-rs/pull/2575)
     - Other series are available in the top level of this repo as `HPMicro.yaml`
-    - HPM6750 is not working(unknown bug), use OpenOCD instead
+    - HPM6750 uses a dedicated `HPM6700_Series.yaml` flash algorithm (in `examples/hpm6750evkmini/`)
   - [probe-rs HPM fork] (`hpmicro` branch), with DAP support and flash speed fix for HPM's RISC-V MCUs
     - [ ] Upstream Pull Request [#2578 JTag support for DAPLink](https://github.com/probe-rs/probe-rs/pull/2578)
 
