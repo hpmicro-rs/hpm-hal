@@ -59,52 +59,69 @@ pub use types::*;
 /// Frequency used for SD Card initialization. Must be no higher than 400 kHz.
 const SD_INIT_FREQ: Hertz = Hertz(400_000);
 
-/// Configure SYSCTL clock source for SDXC peripheral
-/// 
+/// Internal DMA buffer in noncacheable AXI_SRAM
+/// DLM (stack memory) is NOT DMA-accessible on HPM67xx/HPM53xx, so we need
+/// a buffer in AXI_SRAM for SDMA transfers.
+#[unsafe(link_section = ".noncacheable.sdxc_dma_buf")]
+static mut SDXC_DMA_BUF: [u8; 512] = [0u8; 512];
+
+/// Get a reference to the internal DMA buffer (unsafe: not re-entrant)
+fn get_dma_buffer() -> &'static mut [u8; 512] {
+    unsafe { &mut *core::ptr::addr_of_mut!(SDXC_DMA_BUF) }
+}
+
+/// Configure SYSCTL clock source for SDXC peripheral (generic version, used during construction)
+fn configure_sysctl_clock_init<T: Instance>() {
+    configure_sysctl_clock_by_idx(T::SYSCTL_CLOCK, SD_INIT_FREQ);
+}
+
+/// Configure SYSCTL clock source for SDXC peripheral using clock index
+///
 /// For HPM67xx: Uses CLK_24M (24MHz crystal) with appropriate divider
 /// For HPM63xx/HPM68xx: Uses appropriate clock source based on target frequency
-fn configure_sysctl_clock<T: Instance>(target_freq: Hertz) {
-    use crate::sysctl::{ClockConfig, ClockPeripheral};
-    
+fn configure_sysctl_clock_by_idx(sysctl_clock_idx: usize, target_freq: Hertz) {
+    use crate::sysctl::ClockConfig;
+
+    if sysctl_clock_idx == usize::MAX {
+        return;
+    }
+
+    use crate::pac::sysctl::vals::ClockMux;
+    use crate::pac::SYSCTL;
+
     #[cfg(sdxc_v67)]
-    {
-        use crate::pac::sysctl::vals::ClockMux;
-        
-        // HPM67xx: For init phase (<= 400kHz), use 24MHz crystal
-        // For higher speeds, use PLL1CLK1 (400MHz)
-        let cfg = if target_freq.0 <= 400_000 {
-            // 24MHz / 63 = ~380kHz (safe for init)
-            ClockConfig::new(ClockMux::CLK_24M, 63)
-        } else if target_freq.0 <= 26_000_000 {
-            // 24MHz / 1 = 24MHz (for SDR12/default speed)
-            ClockConfig::new(ClockMux::CLK_24M, 1)
-        } else {
-            // Use PLL1CLK1 (400MHz) for high speed modes
-            // The internal SDXC divider will further divide this
-            // 400MHz / 4 = 100MHz base, then SDXC divider for actual speed
-            ClockConfig::new(ClockMux::PLL1CLK1, 4)
-        };
-        
-        T::set_clock(cfg);
-    }
-    
+    let cfg = if target_freq.0 <= 400_000 {
+        // 24MHz / 63 = ~381kHz (matches C SDK board_sd_configure_clock)
+        ClockConfig::new(ClockMux::CLK_24M, 63)
+    } else if target_freq.0 <= 26_000_000 {
+        // 24MHz / 1 = 24MHz (matches C SDK for default speed)
+        ClockConfig::new(ClockMux::CLK_24M, 1)
+    } else {
+        // PLL1CLK1 (400MHz) / 8 = 50MHz (matches C SDK for SDR25)
+        ClockConfig::new(ClockMux::PLL1CLK1, 8)
+    };
+
     #[cfg(any(sdxc_v63, sdxc_v68))]
-    {
-        use crate::pac::sysctl::vals::ClockMux;
-        
-        // HPM63xx/HPM68xx: Similar logic but may have different clock sources
-        let cfg = if target_freq.0 <= 400_000 {
-            // Use 24MHz / 60 = 400kHz for init
-            ClockConfig::new(ClockMux::CLK_24M, 60)
-        } else if target_freq.0 <= 26_000_000 {
-            ClockConfig::new(ClockMux::CLK_24M, 1)
-        } else {
-            // Use PLL for high speed
-            ClockConfig::new(ClockMux::PLL1CLK1, 4)
-        };
-        
-        T::set_clock(cfg);
-    }
+    let cfg = if target_freq.0 <= 400_000 {
+        // Use 24MHz / 60 = 400kHz for init
+        ClockConfig::new(ClockMux::CLK_24M, 60)
+    } else if target_freq.0 <= 26_000_000 {
+        ClockConfig::new(ClockMux::CLK_24M, 1)
+    } else {
+        // Use PLL for high speed
+        ClockConfig::new(ClockMux::PLL1CLK1, 4)
+    };
+
+    SYSCTL.clock(sysctl_clock_idx).modify(|w| {
+        w.set_mux(cfg.src);
+        w.set_div(cfg.raw_div);
+    });
+    while SYSCTL.clock(sysctl_clock_idx).read().loc_busy() {}
+}
+
+/// Get current SYSCTL clock frequency for SDXC peripheral
+fn get_sysctl_frequency(sysctl_clock_idx: usize) -> Hertz {
+    crate::sysctl::clocks().get_clock_freq(sysctl_clock_idx)
 }
 
 // State and Info structures (following Embassy pattern)
@@ -142,6 +159,7 @@ impl State {
 
 struct Info {
     regs: crate::pac::sdxc::Sdxc,
+    sysctl_clock_idx: usize,
 }
 
 // Instance trait using peri_trait! macro
@@ -157,6 +175,7 @@ foreach_peripheral!(
             fn info() -> &'static Info {
                 static INFO: Info = Info {
                     regs: crate::pac::$inst,
+                    sysctl_clock_idx: <peripherals::$inst as crate::sysctl::SealedClockPeripheral>::SYSCTL_CLOCK,
                 };
                 &INFO
             }
@@ -280,7 +299,7 @@ impl<'d, M: Mode> Sdxc<'d, M> {
         
         // Configure SYSCTL clock source for init phase (~400kHz)
         // This is required before accessing SDXC registers on HPM67xx
-        configure_sysctl_clock::<T>(SD_INIT_FREQ);
+        configure_sysctl_clock_init::<T>();
 
         let info = T::info();
         let state = T::state();
@@ -322,10 +341,26 @@ impl<'d, M: Mode> Sdxc<'d, M> {
             }
         }
 
-        // Configure timeout
+        // Configure timeout (per C SDK: sdxc_data_timeout_counter_value14)
         regs.sys_ctrl().modify(|w| w.set_tout_cnt(0x0E));
 
-        // Configure power (3.3V)
+        // Enable internal clock (per C SDK: sdxc_enable_intern_clk)
+        regs.sys_ctrl().modify(|w| w.set_internal_clk_en(true));
+        while !regs.sys_ctrl().read().internal_clk_stable() {}
+
+        // Set FREQ_SEL=0 (no internal clock division) — matches working sdxc_cmd.rs
+        // Note: C SDK uses FREQ_SEL=1 + PLL, but our testing shows FREQ_SEL=0 without PLL
+        // is more reliable for the init phase on HPM67xx
+        regs.sys_ctrl().modify(|w| {
+            w.set_freq_sel(0);
+            w.set_upper_freq_sel(0);
+        });
+
+        // Enable SD clock output (per C SDK: sdxc_enable_sd_clk)
+        regs.sys_ctrl().modify(|w| w.set_sd_clk_en(true));
+
+        // Configure power (per C SDK: sdxc_select_voltage + sdxc_enable_bus_power)
+        // Note: power was already configured above, this is the C SDK order
         regs.prot_ctrl().modify(|w| {
             w.set_sd_bus_vol_vdd1(7); // 3.3V
             w.set_sd_bus_pwr_vdd1(true);
@@ -335,6 +370,13 @@ impl<'d, M: Mode> Sdxc<'d, M> {
         regs.int_stat_en().write(|w| w.0 = 0xFFFFFFFF);
         regs.int_signal_en().write(|w| w.0 = 0);
         regs.int_stat().write(|w| w.0 = 0xFFFFFFFF);
+
+        // Note: Host V4 mode disabled for now - SDMA doesn't work correctly with Host V4 on HPM67xx
+        // When ADMA2 multi-block support is needed, re-enable Host V4 selectively
+        // regs.ac_host_ctrl().modify(|w| {
+        //     w.set_host_ver4_enable(true);
+        //     w.set_adma2_len_mode(true);
+        // });
 
         let kernel_clock = T::frequency();
 
@@ -378,7 +420,7 @@ impl<'d, M: Mode> Sdxc<'d, M> {
     pub fn set_clock(&mut self, freq: Hertz) {
         let regs = self.info.regs;
 
-        // Disable SD clock
+        // Disable SD clock before reconfiguration (per C SDK: only toggle SD CLK)
         regs.sys_ctrl().modify(|w| w.set_sd_clk_en(false));
 
         // Set divider - different approach for different SDXC versions
@@ -397,49 +439,64 @@ impl<'d, M: Mode> Sdxc<'d, M> {
 
         #[cfg(sdxc_v67)]
         let (divider, actual_clock) = {
-            // HPM67xx/64xx: Use standard SD Host Controller clock divider
-            // FREQ_SEL uses 2x division: actual_clock = base_clock / (2 * FREQ_SEL)
-            // FREQ_SEL=0 means full speed (no division)
-            // FREQ_SEL=N means divide by 2*N
-            //
-            // To get desired frequency: FREQ_SEL = base_clock / (2 * freq)
-            // Round up to ensure we don't exceed the target frequency
-            let divider = if freq.0 >= self.kernel_clock.0 {
-                0u16 // No division, full speed
-            } else {
-                // Calculate divider: FREQ_SEL = ceil(base_clock / (2 * freq))
-                let div = (self.kernel_clock.0 + 2 * freq.0 - 1) / (2 * freq.0);
-                div.min(1023) as u16
-            };
+            // HPM67xx/64xx: SYSCTL does all clock division (no SDXC-side divider).
+            // Follow C SDK board_sd_configure_clock sequence exactly:
+            // 1. Disable inverse clock
+            // 2. Disable SD clock (wait for it to clear)
+            // 3. Change SYSCTL source/divider
+            // 4. Re-enable inverse clock if needed
+            // 5. Wait for clock source to stabilize
+            // 6. Re-enable SD clock (wait for it to set)
 
-            regs.sys_ctrl().modify(|w| {
-                w.set_freq_sel((divider & 0xFF) as u8);
-                w.set_upper_freq_sel(((divider >> 8) & 0x3) as u8);
+            // Helper: modify CONCTL register for the correct SDXC instance
+            let conctl = crate::pac::CONCTL;
+            let is_sdxc0 = self.info.regs.as_ptr() as u32 == 0xf203_0000;
+            macro_rules! conctl_modify {
+                ($op:expr) => {
+                    if is_sdxc0 {
+                        conctl.ctrl4().modify($op);
+                    } else {
+                        conctl.ctrl5().modify($op);
+                    }
+                };
+            }
+
+            // Step 1: Disable inverse clock (CONCTL cardclk_inv_en)
+            conctl_modify!(|w| { w.0 &= !(1 << 28); });
+
+            // Step 2: Disable SD clock output and wait
+            regs.sys_ctrl().modify(|w| w.set_sd_clk_en(false));
+            while regs.sys_ctrl().read().sd_clk_en() {}
+
+            // Step 3: Reconfigure SYSCTL clock source/divider
+            configure_sysctl_clock_by_idx(self.info.sysctl_clock_idx, freq);
+
+            // Step 4: Re-enable inverse clock and TM clock
+            // C SDK always uses need_inverse=true for SD clock changes
+            conctl_modify!(|w| {
+                w.0 |= 1 << 10;  // TM clock enable
+                w.0 |= 1 << 28;  // cardclk_inv_en (inverse clock)
             });
 
-            // Calculate actual clock
-            let actual = if divider == 0 {
-                self.kernel_clock.0
-            } else {
-                self.kernel_clock.0 / (2 * divider as u32)
-            };
-            (divider, actual)
+            // Step 5: Update kernel_clock from SYSCTL
+            self.kernel_clock = get_sysctl_frequency(self.info.sysctl_clock_idx);
+
+            (1u16, self.kernel_clock.0 / 2)
         };
 
         #[cfg(feature = "defmt")]
         defmt::debug!("set_clock: kernel={} Hz, target={} Hz, divider={}, actual={} Hz",
             self.kernel_clock.0, freq.0, divider, actual_clock);
 
-        // Enable internal clock and wait for stable
-        regs.sys_ctrl().modify(|w| w.set_internal_clk_en(true));
+        // Wait for internal clock to restabilize
         while !regs.sys_ctrl().read().internal_clk_stable() {}
 
-        // Enable PLL and wait for stable again (required per C SDK)
-        regs.sys_ctrl().modify(|w| w.set_pll_enable(true));
-        while !regs.sys_ctrl().read().internal_clk_stable() {}
-
-        // Enable SD clock
+        // Re-enable SD clock and wait for it to be active
         regs.sys_ctrl().modify(|w| w.set_sd_clk_en(true));
+        while !regs.sys_ctrl().read().sd_clk_en() {}
+
+        // Clear any pending interrupts
+        regs.int_stat().write(|w| w.0 = 0xFFFFFFFF);
 
         // Store actual clock
         self.clock = Hertz(actual_clock);
@@ -561,6 +618,9 @@ impl<'d, M: Mode> Sdxc<'d, M> {
 
             // Only check errors if command hasn't completed
             if status.cmd_tout_err() {
+                #[cfg(feature = "defmt")]
+                defmt::error!("cmd{} TIMEOUT: INT_STAT=0x{:08x} SYS_CTRL=0x{:08x} PSTATE=0x{:08x}",
+                    cmd.cmd, status.0, regs.sys_ctrl().read().0, regs.pstate().read().0);
                 return Err(Error::Timeout);
             }
             if status.cmd_crc_err() {
@@ -874,12 +934,6 @@ impl<'d, M: Mode> Sdxc<'d, M> {
         // Clear all interrupt status
         regs.int_stat().write(|w| w.0 = 0xFFFFFFFF);
 
-        // Enable Host Version 4 mode and ADMA2 26-bit length mode (required for ADMA2)
-        regs.ac_host_ctrl().modify(|w| {
-            w.set_host_ver4_enable(true);
-            w.set_adma2_len_mode(true);
-        });
-
         // Set 400kHz for identification
         self.set_clock(SD_INIT_FREQ);
         #[cfg(feature = "defmt")]
@@ -939,19 +993,35 @@ impl<'d, M: Mode> Sdxc<'d, M> {
                 };
 
                 // CMD2: ALL_SEND_CID
+                #[cfg(feature = "defmt")]
+                defmt::debug!("init_sd_card: sending CMD2 (ALL_SEND_CID)");
                 self.cmd(types::common_cmd::all_send_cid(), false)?;
                 let cid: types::CID<types::SD> = self.get_response_r2().into();
+                #[cfg(feature = "defmt")]
+                defmt::debug!("init_sd_card: CMD2 OK");
 
                 // CMD3: SEND_RELATIVE_ADDR
+                #[cfg(feature = "defmt")]
+                defmt::debug!("init_sd_card: sending CMD3 (SEND_RELATIVE_ADDR)");
                 self.cmd(types::sd_cmd::send_relative_address(), false)?;
                 let rca = types::RCA::<types::SD>::from(self.get_response()).address();
+                #[cfg(feature = "defmt")]
+                defmt::debug!("init_sd_card: CMD3 OK, rca=0x{:04x}", rca);
 
                 // CMD9: SEND_CSD
+                #[cfg(feature = "defmt")]
+                defmt::debug!("init_sd_card: sending CMD9 (SEND_CSD)");
                 self.cmd(types::common_cmd::send_csd(rca), false)?;
                 let csd: types::CSD<types::SD> = self.get_response_r2().into();
+                #[cfg(feature = "defmt")]
+                defmt::debug!("init_sd_card: CMD9 OK");
 
                 // CMD7: SELECT_CARD
+                #[cfg(feature = "defmt")]
+                defmt::debug!("init_sd_card: sending CMD7 (SELECT_CARD)");
                 self.cmd(types::common_cmd::select_card(rca), false)?;
+                #[cfg(feature = "defmt")]
+                defmt::debug!("init_sd_card: CMD7 OK");
 
                 // Store card info
                 self.card = Some(Card {
@@ -963,10 +1033,17 @@ impl<'d, M: Mode> Sdxc<'d, M> {
                     scr: types::SCR::default(),
                 });
 
-                // Switch to target frequency
+                // Switch to target clock speed
                 self.set_clock(freq);
 
-                // After clock change, send 74+ clocks to re-synchronize card
+                // Switch CMD from open-drain to push-pull for transfer mode
+                {
+                    use crate::gpio::SealedPin;
+                    self._cmd.ioc_pad().pad_ctl().write(|w| {
+                        w.set_ds(7);
+                    });
+                }
+
                 self.wait_card_active();
 
                 // Set 4-bit bus width if available
@@ -1106,6 +1183,10 @@ impl<'d, M: Mode> Sdxc<'d, M> {
             arg |= 1 << 31; // Set mode bit
         }
 
+        // Use noncacheable DMA buffer for CMD6 data (64 bytes)
+        let dma_buf = get_dma_buffer();
+        dma_buf[..64].fill(0);
+
         // Configure block transfer for 64-byte status response
         regs.blk_attr().write(|w| {
             w.set_xfer_block_size(64);
@@ -1117,7 +1198,7 @@ impl<'d, M: Mode> Sdxc<'d, M> {
 
         // Configure SDMA buffer address
         regs.prot_ctrl().modify(|w| w.set_dma_sel(0)); // SDMA
-        regs.adma_sys_addr().write(|w| w.0 = status.data.as_ptr() as u32);
+        regs.sdmasa().write(|w| w.0 = dma_buf.as_ptr() as u32);
 
         // CMD16: SET_BLOCKLEN (64 bytes for switch status)
         self.cmd(types::common_cmd::set_block_length(64), false)?;
@@ -1148,10 +1229,17 @@ impl<'d, M: Mode> Sdxc<'d, M> {
             }
         }
 
+        // Invalidate D-Cache and copy DMA buffer data to status
+        unsafe {
+            andes_riscv::l1c::dc_invalidate(dma_buf.as_ptr() as u32, 64);
+        }
+        for i in 0..16 {
+            status.data[i] = unsafe {
+                core::ptr::read_volatile((dma_buf.as_ptr() as *const u32).add(i))
+            };
+        }
+
         // Convert from big-endian (SD card sends data MSB first)
-        // The DMA writes data in transmission order, so we need to:
-        // 1. Reverse the word order
-        // 2. Convert each word from big-endian to little-endian
         status.convert_endian();
 
         // Debug: uncomment to see raw CMD6 response
@@ -1174,9 +1262,8 @@ fn configure_clk_pin<T: Instance>(pin: &impl ClkPin<T>) {
         w.set_alt_select(pin.alt_num());
         w.set_loop_back(true);
     });
-    // CLK pin: high drive strength, no pull (per C SDK)
     pin.ioc_pad().pad_ctl().write(|w| {
-        w.set_ds(6); // High drive strength (Errata E00029 compliant)
+        w.set_ds(7);
     });
 }
 
@@ -1185,14 +1272,9 @@ fn configure_cmd_pin<T: Instance>(pin: &impl CmdPin<T>) {
         w.set_alt_select(pin.alt_num());
         w.set_loop_back(true);
     });
-    // CMD pin: high drive strength, pull-up enabled (PE=1 requires bit[3]=1 per E00029)
-    // Errata E00029: When PE=1, write 0x08 (bit[3]=1) in addition to other settings
     pin.ioc_pad().pad_ctl().write(|w| {
-        w.0 = (6 << 0) // DS=6 (high drive strength, E00029 compliant)
-            | (1 << 11) // PE=1 (pull enable)
-            | (1 << 3)  // bit[3]=1 (required by Errata E00029 when PE=1)
-            | (1 << 12) // PS=1 (pull-up select)
-            | (0 << 8); // OD=0 (push-pull, not open-drain)
+        w.set_ds(7);
+        w.set_od(true);
     });
 }
 
@@ -1201,12 +1283,8 @@ fn configure_d0_pin<T: Instance>(pin: &impl D0Pin<T>) {
         w.set_alt_select(pin.alt_num());
         w.set_loop_back(true);
     });
-    // Data pin: high drive strength, pull-up enabled (E00029 compliant)
     pin.ioc_pad().pad_ctl().write(|w| {
-        w.0 = (6 << 0) // DS=6 (high drive strength)
-            | (1 << 11) // PE=1 (pull enable)
-            | (1 << 3)  // bit[3]=1 (Errata E00029)
-            | (1 << 12); // PS=1 (pull-up)
+        w.set_ds(7);
     });
 }
 
@@ -1215,12 +1293,8 @@ fn configure_d1_pin<T: Instance>(pin: &impl D1Pin<T>) {
         w.set_alt_select(pin.alt_num());
         w.set_loop_back(true);
     });
-    // Data pin: high drive strength, pull-up enabled (E00029 compliant)
     pin.ioc_pad().pad_ctl().write(|w| {
-        w.0 = (6 << 0) // DS=6 (high drive strength)
-            | (1 << 11) // PE=1 (pull enable)
-            | (1 << 3)  // bit[3]=1 (Errata E00029)
-            | (1 << 12); // PS=1 (pull-up)
+        w.set_ds(7);
     });
 }
 
@@ -1229,12 +1303,8 @@ fn configure_d2_pin<T: Instance>(pin: &impl D2Pin<T>) {
         w.set_alt_select(pin.alt_num());
         w.set_loop_back(true);
     });
-    // Data pin: high drive strength, pull-up enabled (E00029 compliant)
     pin.ioc_pad().pad_ctl().write(|w| {
-        w.0 = (6 << 0) // DS=6 (high drive strength)
-            | (1 << 11) // PE=1 (pull enable)
-            | (1 << 3)  // bit[3]=1 (Errata E00029)
-            | (1 << 12); // PS=1 (pull-up)
+        w.set_ds(7);
     });
 }
 
@@ -1243,12 +1313,8 @@ fn configure_d3_pin<T: Instance>(pin: &impl D3Pin<T>) {
         w.set_alt_select(pin.alt_num());
         w.set_loop_back(true);
     });
-    // Data pin: high drive strength, pull-up enabled (E00029 compliant)
     pin.ioc_pad().pad_ctl().write(|w| {
-        w.0 = (6 << 0) // DS=6 (high drive strength)
-            | (1 << 11) // PE=1 (pull enable)
-            | (1 << 3)  // bit[3]=1 (Errata E00029)
-            | (1 << 12); // PS=1 (pull-up)
+        w.set_ds(7);
     });
 }
 
@@ -1324,6 +1390,10 @@ impl<'d> Sdxc<'d, Blocking> {
             _ => block_idx,
         };
 
+        // Use internal DMA buffer in noncacheable AXI_SRAM
+        // Stack buffers may be in DLM (not DMA-accessible) or cacheable AXI_SRAM
+        let dma_buf = get_dma_buffer();
+
         // Configure block transfer
         regs.blk_attr().write(|w| {
             w.set_xfer_block_size(512);
@@ -1333,10 +1403,9 @@ impl<'d> Sdxc<'d, Blocking> {
         // Clear status
         regs.int_stat().write(|w| w.0 = 0xFFFFFFFF);
 
-        // Configure SDMA: set DMA type to SDMA (0) and set buffer address
-        // Due to errata E00033, PIO/FIFO mode is unreliable, must use DMA
+        // Configure SDMA: use SDMASA register (offset 0x00), NOT ADMA_SYS_ADDR (offset 0x58)
         regs.prot_ctrl().modify(|w| w.set_dma_sel(0)); // SDMA
-        regs.adma_sys_addr().write(|w| w.0 = buffer.0.as_ptr() as u32);
+        regs.sdmasa().write(|w| w.0 = dma_buf.as_ptr() as u32);
 
         // CMD16: SET_BLOCKLEN
         self.cmd(types::common_cmd::set_block_length(512), false)?;
@@ -1345,6 +1414,7 @@ impl<'d> Sdxc<'d, Blocking> {
         self.cmd_dma(types::common_cmd::read_single_block(address))?;
 
         // Wait for transfer complete
+        let mut timeout_count = 0u32;
         loop {
             let status = regs.int_stat().read();
             if status.data_tout_err() {
@@ -1356,6 +1426,20 @@ impl<'d> Sdxc<'d, Blocking> {
             if status.xfer_complete() {
                 regs.int_stat().write(|w| w.set_xfer_complete(true));
                 break;
+            }
+            timeout_count += 1;
+            if timeout_count > 10_000_000 {
+                return Err(Error::SoftwareTimeout);
+            }
+        }
+
+        // Invalidate D-Cache and copy using volatile reads to ensure CPU sees DMA-written data
+        unsafe {
+            andes_riscv::l1c::dc_invalidate(dma_buf.as_ptr() as u32, 512);
+            let src = dma_buf.as_ptr();
+            let dst = buffer.0.as_mut_ptr();
+            for i in 0..512 {
+                dst.add(i).write(core::ptr::read_volatile(src.add(i)));
             }
         }
 
@@ -1503,6 +1587,13 @@ impl<'d> Sdxc<'d, Blocking> {
             _ => block_idx,
         };
 
+        // Copy user data to DMA buffer and flush D-Cache
+        let dma_buf = get_dma_buffer();
+        dma_buf.copy_from_slice(&buffer.0);
+        unsafe {
+            andes_riscv::l1c::dc_writeback(dma_buf.as_ptr() as u32, 512);
+        }
+
         // Configure block transfer
         regs.blk_attr().write(|w| {
             w.set_xfer_block_size(512);
@@ -1512,10 +1603,9 @@ impl<'d> Sdxc<'d, Blocking> {
         // Clear status
         regs.int_stat().write(|w| w.0 = 0xFFFFFFFF);
 
-        // Configure SDMA: set DMA type to SDMA (0) and set buffer address
-        // Due to errata E00033, PIO/FIFO mode is unreliable, must use DMA
+        // Configure SDMA
         regs.prot_ctrl().modify(|w| w.set_dma_sel(0)); // SDMA
-        regs.adma_sys_addr().write(|w| w.0 = buffer.0.as_ptr() as u32);
+        regs.sdmasa().write(|w| w.0 = dma_buf.as_ptr() as u32);
 
         // CMD16: SET_BLOCKLEN
         self.cmd(types::common_cmd::set_block_length(512), false)?;
@@ -1524,6 +1614,7 @@ impl<'d> Sdxc<'d, Blocking> {
         self.cmd_dma_write(types::common_cmd::write_single_block(address))?;
 
         // Wait for transfer complete
+        let mut timeout_count = 0u32;
         loop {
             let status = regs.int_stat().read();
             if status.data_tout_err() {
@@ -1535,6 +1626,10 @@ impl<'d> Sdxc<'d, Blocking> {
             if status.xfer_complete() {
                 regs.int_stat().write(|w| w.set_xfer_complete(true));
                 break;
+            }
+            timeout_count += 1;
+            if timeout_count > 10_000_000 {
+                return Err(Error::SoftwareTimeout);
             }
         }
 
@@ -1699,6 +1794,9 @@ impl<'d> Sdxc<'d, Async> {
             _ => block_idx,
         };
 
+        // Use internal DMA buffer in noncacheable AXI_SRAM
+        let dma_buf = get_dma_buffer();
+
         // Configure block transfer
         regs.blk_attr().write(|w| {
             w.set_xfer_block_size(512);
@@ -1711,7 +1809,7 @@ impl<'d> Sdxc<'d, Async> {
 
         // Configure SDMA
         regs.prot_ctrl().modify(|w| w.set_dma_sel(0)); // SDMA
-        regs.adma_sys_addr().write(|w| w.0 = buffer.0.as_ptr() as u32);
+        regs.sdmasa().write(|w| w.0 = dma_buf.as_ptr() as u32);
 
         // Enable interrupts (status enable + signal enable)
         regs.int_stat_en().write(|w| {
@@ -1758,6 +1856,18 @@ impl<'d> Sdxc<'d, Async> {
         // Clear status
         regs.int_stat().write(|w| w.0 = 0xFFFFFFFF);
 
+        // Copy DMA data to user buffer using volatile reads
+        if result.is_ok() {
+            unsafe {
+                andes_riscv::l1c::dc_invalidate(dma_buf.as_ptr() as u32, 512);
+                let src = dma_buf.as_ptr();
+                let dst = buffer.0.as_mut_ptr();
+                for i in 0..512 {
+                    dst.add(i).write(core::ptr::read_volatile(src.add(i)));
+                }
+            }
+        }
+
         result
     }
 
@@ -1777,6 +1887,13 @@ impl<'d> Sdxc<'d, Async> {
             _ => block_idx,
         };
 
+        // Copy user data to noncacheable DMA buffer and flush D-Cache
+        let dma_buf = get_dma_buffer();
+        dma_buf.copy_from_slice(&buffer.0);
+        unsafe {
+            andes_riscv::l1c::dc_writeback(dma_buf.as_ptr() as u32, 512);
+        }
+
         // Configure block transfer
         regs.blk_attr().write(|w| {
             w.set_xfer_block_size(512);
@@ -1789,7 +1906,7 @@ impl<'d> Sdxc<'d, Async> {
 
         // Configure SDMA
         regs.prot_ctrl().modify(|w| w.set_dma_sel(0)); // SDMA
-        regs.adma_sys_addr().write(|w| w.0 = buffer.0.as_ptr() as u32);
+        regs.sdmasa().write(|w| w.0 = dma_buf.as_ptr() as u32);
 
         // Enable interrupts
         regs.int_stat_en().write(|w| {
