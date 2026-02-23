@@ -9,14 +9,14 @@ This crate is a working-in-progress and not ready for production use.
 
 ### MCU Family Support
 
-| MCU Family | PAC | Demo | Embassy | SYSCTL | GPIO | UART | I2C | SPI | DMA | TMR | PWM | ADC | WDG | USB | CAN | ENET |
-| ---------- | --- | ---- | ------- | ------ | ---- | ---- | --- | --- | --- | --- | --- | --- | --- | --- | --- | ---- |
-| HPM6700    | Y   | Y    | Y       | Y      | Y+   | Y+   | Y+  | Y+  | Y+  | ?   | Y   |     | Y   |     |     | Y+   |
-| HPM6300    | Y   | Y    | Y       | Y      | Y+   | ?    | ?   | ?   | ?   | ?   | ?   |     | Y   |     |     | Y+   |
-| HPM6200    | Y   | Y    | Y       | Y      | Y+   |      |     |     |     | ?   | ?   |     | Y   |     |     |      |
-| HPM5300    | Y   | Y    | Y       | Y      | Y+   | Y+   | Y+  | Y+  | Y+  | Y   | ?   | Y   | Y   | Y   | Y   |      |
-| HPM6800    | Y   |      |         |        |      |      |     |     |     | ?   | ?   |     | Y   |     |     |      |
-| HPM6E00    | Y   | Y    | Y       | Y      | Y+   | Y+   | Y+  | Y+  | Y+  | ?   | ?   |     | Y   | Y   | Y   | Y+   |
+| MCU Family | PAC | Demo | Embassy | SYSCTL | GPIO | UART | I2C | SPI | DMA | TMR | PWM | ADC | WDG | USB | CAN | ENET | SDXC | I2S | PDM | DAO | FFA |
+| ---------- | --- | ---- | ------- | ------ | ---- | ---- | --- | --- | --- | --- | --- | --- | --- | --- | --- | ---- | ---- | --- | --- | --- | --- |
+| HPM6700    | Y   | Y    | Y       | Y      | Y+   | Y+   | Y+  | Y+  | Y+  | ?   | Y   |     | Y   |     |     | Y+   | Y+   | Y   | Y   | Y   |     |
+| HPM6300    | Y   | Y    | Y       | Y      | Y+   | ?    | ?   | ?   | ?   | ?   | ?   |     | Y   |     |     | Y+   | Y+   | Y   | Y   |     | Y   |
+| HPM6200    | Y   | Y    | Y       | Y      | Y+   |      |     |     |     | ?   | ?   |     | Y   |     |     |      |      |     |     |     |     |
+| HPM5300    | Y   | Y    | Y       | Y      | Y+   | Y+   | Y+  | Y+  | Y+  | Y   | ?   | Y   | Y   | Y   | Y   |      |      |     |     |     |     |
+| HPM6800    | Y   |      |         |        |      |      |     |     |     | ?   | ?   |     | Y   |     |     |      | Y    | Y   | Y   | Y   | Y   |
+| HPM6E00    | Y   | Y    | Y       | Y      | Y+   | Y+   | Y+  | Y+  | Y+  | ?   | ?   |     | Y   | Y   | Y   | Y+   |      | Y   | Y   | Y   | Y   |
 
 - Y: Implemented
 - ?: Requires demo verification
@@ -62,6 +62,13 @@ This crate is a working-in-progress and not ready for production use.
   - [x] Fractional duty cycle for 100ps resolution
   - [x] 4 independent counters
   - [ ] ComplementaryPwmV2
+- [ ] QEI (Quadrature Encoder Interface)
+  - [x] Pin configuration and constructors
+  - [ ] Position/speed reading
+- [ ] TRGM (Trigger Manager)
+  - [x] Peripheral skeleton and raw register access
+  - [ ] MUX matrix routing API
+  - [ ] Input filtering and edge detection
 - [x] ADC driver
   - [x] ADC16
     - blocking one-shot
@@ -89,11 +96,33 @@ This crate is a working-in-progress and not ready for production use.
   - [x] Device
   - [ ] Host
 - [x] XPI NOR flash driver using embedded-storage
+- [x] SDXC (SD/MMC Card Interface)
+  - [x] Blocking SDMA single-block read/write
+  - [x] Async SDMA with interrupt
+  - [x] ADMA2 multi-block read/write
+  - [x] High Speed mode (SDR25, 50MHz)
+  - [x] embedded-sdmmc FAT32 integration
 - [x] ENET (Ethernet)
   - [x] RMII interface support
   - [x] Generic PHY driver (RTL8201, etc.)
   - [x] embassy-net integration
   - [x] TCP/UDP via smoltcp
+- [x] I2S audio interface
+  - [x] Master/Slave mode
+  - [x] DMA streaming support
+  - [x] Multiple data formats (16/24/32-bit)
+- [x] DAO (Digital Audio Output)
+  - [x] Sigma-Delta DAC, blocking mode
+  - [x] DMA streaming via I2S TX
+- [x] PDM (Digital Microphone Interface)
+  - [x] Up to 8 microphone channels
+  - [x] CIC decimation filter
+  - [x] DMA capture via I2S RX
+- [x] FFA (FFT/FIR Accelerator)
+  - [x] FFT forward/inverse (Q31, Q15)
+  - [x] FP32 FFT (HPM6E00 only)
+  - [x] FIR filtering
+  - [x] Point sizes 8 to 4096
 - [x] RNG, in blocking mode
 - [x] CRC, with split pattern for multi-channel support
 - [x] ACMP (Analog Comparator)
