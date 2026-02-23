@@ -190,7 +190,7 @@ impl Default for TransferConfig {
     }
 }
 
-/// SPI error.
+/// SPI master error.
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Error {
@@ -202,6 +202,47 @@ pub enum Error {
     BufferTooLong,
     /// FIFO FULL
     FifoFull,
+}
+
+pub mod slave;
+
+/// SPI Slave configuration
+pub struct SlaveConfig {
+    /// SPI mode (CPOL/CPHA), must match master's mode
+    pub mode: Mode,
+    /// Bit order
+    pub bit_order: BitOrder,
+    /// Data-only mode: true = pure data pipe (no cmd/addr phases),
+    /// false = command-aware mode (supports cmd/addr/status)
+    pub data_only: bool,
+}
+
+impl Default for SlaveConfig {
+    fn default() -> Self {
+        Self {
+            mode: MODE_0,
+            bit_order: BitOrder::MsbFirst,
+            data_only: true,
+        }
+    }
+}
+
+/// SPI Slave status
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct SlaveStatus {
+    /// Slave is ready for data transaction
+    pub ready: bool,
+    /// Data overrun occurred in last transaction
+    pub overrun: bool,
+    /// Data underrun occurred in last transaction
+    pub underrun: bool,
+    /// User-defined status (16 bits, readable by master)
+    pub user_status: u16,
+    /// Slave received data count
+    pub rx_count: u16,
+    /// Slave transmitted data count
+    pub tx_count: u16,
 }
 
 // - MARK: SPI driver
@@ -1197,15 +1238,15 @@ impl<'d, M: PeriMode> Spi<'d, M> {
 // ==========
 // - MARK: Helper types and functions
 
-fn flush_rx_fifo(r: crate::pac::spi::Spi) {
+pub(crate) fn flush_rx_fifo(r: crate::pac::spi::Spi) {
     while !r.status().read().rxempty() {
         let _ = r.data().read();
     }
 }
 
-struct State {
+pub(crate) struct State {
     #[allow(unused)]
-    waker: AtomicWaker,
+    pub(crate) waker: AtomicWaker,
 }
 
 impl State {
@@ -1216,8 +1257,8 @@ impl State {
     }
 }
 
-struct Info {
-    regs: crate::pac::spi::Spi,
+pub(crate) struct Info {
+    pub(crate) regs: crate::pac::spi::Spi,
 }
 
 peri_trait!(
