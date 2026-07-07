@@ -115,13 +115,8 @@ impl<'d, T: Instance, D> Endpoint<'d, T, D> {
                 i += 1;
 
                 // If the transfer size > 0x4000, then there should be multiple qtds in the linked list
-                let transfer_bytes = if remaining_bytes > 0x4000 {
-                    remaining_bytes -= 0x4000;
-                    0x4000
-                } else {
-                    remaining_bytes = 0;
-                    data.len()
-                };
+                let transfer_bytes = remaining_bytes.min(0x4000);
+                remaining_bytes -= transfer_bytes;
 
                 // Initialize qtd with the data (address conversion is done inside reinit_with)
                 unsafe {
