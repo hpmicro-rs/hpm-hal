@@ -14,16 +14,16 @@ license = "MIT/Apache-2.0"
 
 [dependencies]
 # local-development
-# hpm-metapac = { path = "../hpm-data/build/hpm-metapac" }
+hpm-metapac = { path = "../hpm-data/build/hpm-metapac" }
 # git snapshot
-hpm-metapac = { git = "https://github.com/hpmicro-rs/hpm-metapac.git", tag = "hpm-data-abf274bfa5ee7f403a4d148e2409e0eb3fe9229d" }
+# hpm-metapac = { git = "https://github.com/hpmicro-rs/hpm-metapac.git", tag = "hpm-data-abf274bfa5ee7f403a4d148e2409e0eb3fe9229d" }
 
-# hpm-riscv-rt = { path = "../hpm-riscv-rt", optional = true }
-hpm-riscv-rt = { version = "0.3.0", optional = true }
+hpm-riscv-rt = { path = "../hpm-riscv-rt", optional = true }
+# hpm-riscv-rt = { version = "0.3.0", optional = true }
 andes-riscv = { version = "0.1.1" }
 
 riscv = { version = "0.15.0", features = ["critical-section-single-hart"] }
-riscv-pac = "0.2.0"
+riscv-pac = "0.3.0"
 
 embedded-hal = { version = "1.0.0" }
 embassy-time-driver = { version = "0.2.1", features = [
@@ -52,8 +52,8 @@ embedded-storage = "0.3.1"
 rand_core = "0.9.3"
 
 [build-dependencies]
-# hpm-metapac = { path = "../hpm-data/build/hpm-metapac", default-features = false, features = ["metadata"] }
-hpm-metapac = { git = "https://github.com/hpmicro-rs/hpm-metapac.git", tag = "hpm-data-abf274bfa5ee7f403a4d148e2409e0eb3fe9229d", default-features = false, features = ["metadata"] }
+hpm-metapac = { path = "../hpm-data/build/hpm-metapac", default-features = false, features = ["metadata"] }
+# hpm-metapac = { git = "https://github.com/hpmicro-rs/hpm-metapac.git", tag = "hpm-data-abf274bfa5ee7f403a4d148e2409e0eb3fe9229d", default-features = false, features = ["metadata"] }
 
 proc-macro2 = "1.0.92"
 quote = "1.0.37"
@@ -106,3 +106,21 @@ hpm6e50 = ["hpm-metapac/hpm6e50", "mcan"]
 hpm6e60 = ["hpm-metapac/hpm6e60", "mcan"]
 hpm6e70 = ["hpm-metapac/hpm6e70", "mcan"]
 hpm6e80 = ["hpm-metapac/hpm6e80", "mcan"]
+hpm5e11 = [
+    "hpm-metapac/hpm5e11",
+    "hpm-riscv-rt/ignore-illegal-mtval-zero",
+    "hpm-riscv-rt/pma-noncacheable",
+    "mcan",
+]
+hpm5e31 = [
+    "hpm-metapac/hpm5e31",
+    "hpm-riscv-rt/ignore-illegal-mtval-zero",
+    "hpm-riscv-rt/pma-noncacheable",
+    "mcan",
+]
+hpm5e3y = [
+    "hpm-metapac/hpm5e3y",
+    "hpm-riscv-rt/ignore-illegal-mtval-zero",
+    "hpm-riscv-rt/pma-noncacheable",
+    "mcan",
+]

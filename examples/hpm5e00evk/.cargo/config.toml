@@ -1,0 +1,35 @@
+[build]
+target = "riscv32imafc-unknown-none-elf"
+
+[target.riscv32imafc-unknown-none-elf]
+runner = [
+    "/Users/mono/opt/riscv-openocd-hpm/bin/openocd",
+    "-s",
+    "/Users/mono/Elec/HPM/hpm_sdk/boards/openocd",
+    "-c",
+    "set HPM_SDK_BASE /Users/mono/Elec/HPM/hpm_sdk; set BOARD hpm5e00evk; set PROBE cmsis_dap",
+    "-f",
+    "hpm5e00_all_in_one.cfg",
+    "-c",
+    "cmsis-dap backend usb_bulk",
+    "-c",
+    "adapter speed 100",
+]
+
+rustflags = [
+    "-C",
+    "target-feature=+zba,+zbb,+zbc,+zbs,+d,+zfh",
+    "-C",
+    "link-arg=-Tmemory.x",
+    "-C",
+    "link-arg=-Tdevice.x",
+    "-C",
+    "link-arg=-Tboot-header.x",
+    "-C",
+    "link-arg=-Thpm-link.x",
+    "-C",
+    "link-arg=-nmagic",
+]
+
+[unstable]
+build-std = ["core"]

@@ -9,7 +9,11 @@ use hpm_metapac::usb::regs::*;
 use riscv::delay::McycleDelay;
 
 use super::{ENDPOINT_COUNT, EP_IN_WAKERS, EP_OUT_WAKERS, EndpointState, Instance, init_qhd, local_to_sys_address};
-use crate::usb::{BUS_WAKER, Config, EpConfig, IRQ_RESET, IRQ_SUSPEND, IRQ_VBUS_CHANGE, reset_dcd_data};
+use crate::usb::{
+    BUS_WAKER, Config, EpConfig, IRQ_RESET, IRQ_SUSPEND, IRQ_VBUS_CHANGE, USB_DEBUG_OTGSC, USB_DEBUG_PHY_CTRL0,
+    USB_DEBUG_PORTSC1, USB_DEBUG_STAGE, USB_DEBUG_USBCMD, USB_DEBUG_USBINTR, USB_DEBUG_USBMODE, USB_DEBUG_USBSTS,
+    reset_dcd_data,
+};
 
 /// USB bus
 pub struct Bus<'d, T: Instance> {
@@ -26,6 +30,8 @@ pub struct Bus<'d, T: Instance> {
 impl<T: Instance> embassy_usb_driver::Bus for Bus<'_, T> {
     /// Enable the USB bus.
     async fn enable(&mut self) {
+        Self::debug_snapshot(0x100);
+
         // Init the usb phy and device controller
         self.device_init();
 
@@ -37,7 +43,7 @@ impl<T: Instance> embassy_usb_driver::Bus for Bus<'_, T> {
             r.endptlistaddr().modify(|w| w.0 = qhd_addr);
 
             // Clear status
-            r.usbsts().modify(|w| w.0 = w.0);
+            r.usbsts().write_value(r.usbsts().read());
 
             // Enable interrupt mask
             r.usbintr().write(|w| {
@@ -45,6 +51,7 @@ impl<T: Instance> embassy_usb_driver::Bus for Bus<'_, T> {
                 w.set_uee(true);
                 w.set_pce(true);
                 w.set_ure(true);
+                w.set_sle(true);
             });
 
             // Enable VBUS change interrupt (A Session Valid Interrupt Enable)
@@ -53,9 +60,11 @@ impl<T: Instance> embassy_usb_driver::Bus for Bus<'_, T> {
                 w.set_asvie(true); // Enable interrupt
             });
         }
+        Self::debug_snapshot(0x120);
 
         // Start to run usb device
         self.device_connect();
+        Self::debug_snapshot(0x13f);
     }
 
     /// Disable and powers down the USB peripheral.
@@ -75,10 +84,17 @@ impl<T: Instance> embassy_usb_driver::Bus for Bus<'_, T> {
             // Initial VBUS detection
             if !self.inited {
                 self.inited = true;
+                Self::debug_snapshot(0x600);
+                if self.config.use_internal_vbus {
+                    Self::debug_snapshot(0x603);
+                    return Poll::Ready(Event::PowerDetected);
+                }
                 // Check current VBUS state via OTGSC.ASV (A Session Valid)
                 if r.otgsc().read().asv() {
+                    Self::debug_snapshot(0x601);
                     return Poll::Ready(Event::PowerDetected);
                 } else {
+                    Self::debug_snapshot(0x602);
                     return Poll::Ready(Event::PowerRemoved);
                 }
             }
@@ -86,10 +102,17 @@ impl<T: Instance> embassy_usb_driver::Bus for Bus<'_, T> {
             // VBUS change event
             if IRQ_VBUS_CHANGE.load(Ordering::Acquire) {
                 IRQ_VBUS_CHANGE.store(false, Ordering::Relaxed);
+                Self::debug_snapshot(0x610);
+                if self.config.use_internal_vbus {
+                    Self::debug_snapshot(0x613);
+                    return Poll::Ready(Event::PowerDetected);
+                }
                 // Check current VBUS state
                 if r.otgsc().read().asv() {
+                    Self::debug_snapshot(0x611);
                     return Poll::Ready(Event::PowerDetected);
                 } else {
+                    Self::debug_snapshot(0x612);
                     return Poll::Ready(Event::PowerRemoved);
                 }
             }
@@ -97,15 +120,17 @@ impl<T: Instance> embassy_usb_driver::Bus for Bus<'_, T> {
             // RESET event
             if IRQ_RESET.load(Ordering::Acquire) {
                 IRQ_RESET.store(false, Ordering::Relaxed);
+                Self::debug_snapshot(0x620);
 
-                // Disable all endpoints except ep0
-                for i in 1..ENDPOINT_COUNT {
-                    self.endpoint_close(EndpointAddress::from_parts(i, Direction::In));
-                    self.endpoint_close(EndpointAddress::from_parts(i, Direction::Out));
-                }
+                let intr = r.usbintr().read().0 & !0x40;
+                r.usbintr().write(|w| w.0 = intr);
+                Self::debug_snapshot(0x622);
 
-                // Set device addr to 0
-                self.device_set_address(0);
+                Self::debug_snapshot(0x623);
+
+                // Reset bus and DCD data before reopening EP0.
+                self.device_bus_reset(64);
+                Self::debug_snapshot(0x624);
 
                 // Set ep0 IN/OUT
                 self.endpoint_open(EpConfig {
@@ -113,11 +138,23 @@ impl<T: Instance> embassy_usb_driver::Bus for Bus<'_, T> {
                     ep_addr: EndpointAddress::from_parts(0, Direction::In),
                     max_packet_size: 64,
                 });
+                Self::debug_snapshot(0x625);
                 self.endpoint_open(EpConfig {
                     transfer: EndpointType::Control as u8,
                     ep_addr: EndpointAddress::from_parts(0, Direction::Out),
                     max_packet_size: 64,
                 });
+                Self::debug_snapshot(0x626);
+
+                // Restore the device interrupt set after EP0 has been rebuilt.
+                r.usbintr().write(|w| {
+                    w.set_ue(true);
+                    w.set_uee(true);
+                    w.set_pce(true);
+                    w.set_ure(true);
+                    w.set_sle(true);
+                });
+                Self::debug_snapshot(0x627);
 
                 for w in &EP_IN_WAKERS {
                     w.wake()
@@ -126,23 +163,19 @@ impl<T: Instance> embassy_usb_driver::Bus for Bus<'_, T> {
                     w.wake()
                 }
 
-                // Reset bus
-                self.device_bus_reset(64);
-
-                // Enable usb transfer interrupt
-                r.usbintr().modify(|w| w.set_ue(true));
-                r.usbintr().modify(|w| w.set_ure(false));
-
+                Self::debug_snapshot(0x621);
                 return Poll::Ready(Event::Reset);
             }
 
             // SUSPEND event
             if IRQ_SUSPEND.load(Ordering::Acquire) {
                 IRQ_SUSPEND.store(false, Ordering::Relaxed);
+                Self::debug_snapshot(0x630);
                 if r.portsc1().read().susp() {
                     // Note: Host may delay more than 3 ms before and/or after bus reset before doing enumeration.
                     let _device_adr = r.deviceaddr().read().usbadr();
                 }
+                Self::debug_snapshot(0x631);
                 return Poll::Ready(Event::Suspend);
             }
 
@@ -212,9 +245,22 @@ impl<T: Instance> embassy_usb_driver::Bus for Bus<'_, T> {
 }
 
 impl<T: Instance> Bus<'_, T> {
+    fn debug_snapshot(stage: u32) {
+        let r = T::info().regs;
+        USB_DEBUG_STAGE.store(stage, Ordering::Relaxed);
+        USB_DEBUG_USBSTS.store(r.usbsts().read().0, Ordering::Relaxed);
+        USB_DEBUG_USBINTR.store(r.usbintr().read().0, Ordering::Relaxed);
+        USB_DEBUG_PORTSC1.store(r.portsc1().read().0, Ordering::Relaxed);
+        USB_DEBUG_OTGSC.store(r.otgsc().read().0, Ordering::Relaxed);
+        USB_DEBUG_PHY_CTRL0.store(r.phy_ctrl0().read().0, Ordering::Relaxed);
+        USB_DEBUG_USBCMD.store(r.usbcmd().read().0, Ordering::Relaxed);
+        USB_DEBUG_USBMODE.store(r.usbmode().read().0, Ordering::Relaxed);
+    }
+
     /// Initialize USB phy
     fn phy_init(&mut self) {
         let r = T::info().regs;
+        Self::debug_snapshot(0x300);
 
         // Enable dp/dm pulldown
         // In hpm_sdk, this operation is done by `ptr->PHY_CTRL0 &= ~0x001000E0u`.
@@ -252,11 +298,17 @@ impl<T: Instance> Bus<'_, T> {
         r.phy_status().modify(|w| w.set_utmi_clk_valid(true));
         while !r.phy_status().read().utmi_clk_valid() {}
 
+        r.phy_ctrl0().modify(|w| {
+            w.0 |= 0x800;
+        });
+
         // Reset and set suspend
         r.phy_ctrl1().modify(|w| {
             w.set_utmi_cfg_rst_n(true);
-            w.set_utmi_otg_suspendm(true);
+            w.set_utmi_otg_suspendm(false);
         });
+
+        Self::debug_snapshot(0x31f);
     }
 
     // Deinitialize USB phy
@@ -298,15 +350,15 @@ impl<T: Instance> Bus<'_, T> {
         }
 
         // Clear all registers(by writing 1 to any non-zero bits)
-        r.endptnak().modify(|w| w.0 = w.0);
-        r.endptnaken().modify(|w| w.0 = 0);
-        r.usbsts().modify(|w| w.0 = w.0);
-        r.endptsetupstat().modify(|w| w.0 = w.0);
-        r.endptcomplete().modify(|w| w.0 = w.0);
+        r.endptnak().write_value(r.endptnak().read());
+        r.endptnaken().write(|w| w.0 = 0);
+        r.usbsts().write_value(r.usbsts().read());
+        r.endptsetupstat().write_value(r.endptsetupstat().read());
+        r.endptcomplete().write_value(r.endptcomplete().read());
 
         while r.endptprime().read().0 != 0 {}
 
-        r.endptflush().modify(|w| w.0 = 0xFFFFFFFF);
+        r.endptflush().write(|w| w.0 = 0xFFFF_FFFF);
 
         while r.endptflush().read().0 != 0 {}
 
@@ -314,10 +366,13 @@ impl<T: Instance> Bus<'_, T> {
         unsafe {
             reset_dcd_data(self.ep_state, ep0_max_packet_size);
         }
+        core::sync::atomic::compiler_fence(Ordering::SeqCst);
     }
 
     /// Initialize USB device controller driver
     fn device_init(&mut self) {
+        Self::debug_snapshot(0x400);
+
         // Initialize phy first
         self.phy_init();
 
@@ -336,7 +391,7 @@ impl<T: Instance> Bus<'_, T> {
             // Set little endian
             w.set_es(false);
             // Disable setup lockout, please refer to "Control Endpoint Operation" section in RM
-            w.set_slom(false);
+            w.set_slom(true);
         });
 
         r.portsc1().modify(|w| {
@@ -357,6 +412,8 @@ impl<T: Instance> Bus<'_, T> {
         r.otgsc().modify(|w| {
             w.set_vd(true);
         });
+
+        Self::debug_snapshot(0x41f);
     }
 
     /// Set device address
@@ -391,10 +448,13 @@ impl<T: Instance> Bus<'_, T> {
     /// Connect by enabling internal pull-up resistor on D+/D-
     fn device_connect(&mut self) {
         let r = T::info().regs;
+        Self::debug_snapshot(0x500);
 
         r.usbcmd().modify(|w| {
             w.set_rs(true);
         });
+
+        Self::debug_snapshot(0x51f);
     }
 
     /// Open the endpoint

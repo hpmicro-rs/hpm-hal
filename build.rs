@@ -54,6 +54,37 @@ fn get_ip_features(chip_family: &str) -> &[&str] {
             "I2C_TRANSFER_COUNT_MAX_4096",
             "ADC_BUSMODE_ENABLE_CTRL_SUPPORT",
         ],
+        "hpm5e" => &[
+            "GPTMR_MONITOR",
+            "GPTMR_OP_MODE",
+            "GPTMR_CNT_MODE",
+            "UART_RX_IDLE_DETECT",
+            "UART_FCRR",
+            "UART_RX_EN",
+            "UART_E00018_FIX",
+            "UART_9BIT_MODE",
+            "UART_ADDR_MATCH",
+            "UART_TRIG_MODE",
+            "UART_FINE_FIFO_THRLD",
+            "UART_IIR2",
+            "I2C_SUPPORT_RESET",
+            "SPI_NEW_TRANS_COUNT",
+            "SPI_CS_SELECT",
+            "SPI_SUPPORT_DIRECTIO",
+            "DMAV2_BURST_IN_FIXED_TRANS",
+            "DMAV2_BYTE_ORDER_SWAP",
+            "ADC16_HAS_MOT_EN",
+            "QEIV2_ONESHOT_MODE",
+            "QEIV2_SW_RESTART_TRG",
+            "QEIV2_TIMESTAMP",
+            "QEIV2_ADC_THRESHOLD",
+            "ENET_HAS_MII_MODE",
+            // custom
+            "DMA_V2",
+            "DMA_V2_SWAP_TABLE",
+            "I2C_TRANSFER_COUNT_MAX_4096",
+            "ADC_BUSMODE_ENABLE_CTRL_SUPPORT",
+        ],
         "hpm68" => &[
             "UART_RX_IDLE_DETECT",
             "UART_FCRR",
@@ -134,8 +165,12 @@ fn main() {
 
     eprintln!("chip: {chip_name}");
 
-    // hpm53, hpm67, etc
-    let family_name = chip_name[0..5].to_ascii_lowercase();
+    // hpm53, hpm67, hpm5e, etc
+    let family_name = if chip_name.starts_with("hpm5e") {
+        "hpm5e".to_string()
+    } else {
+        chip_name[0..5].to_ascii_lowercase()
+    };
     cfgs.enable(&family_name);
 
     // IP feature gates, usesage: #[cfg(ip_feature_adc16_has_tempsns)]
@@ -541,6 +576,7 @@ fn main() {
                 #[hpm_riscv_rt::external_interrupt(hpm_metapac::interrupt::#irq)]
                 fn #irq() {
                     unsafe { <crate::peripherals::#peri_name as crate::dma::ControllerInterrupt>::on_irq() };
+                    crate::interrupt::InterruptExt::complete(crate::interrupt::#irq);
                 }
             }
         })
@@ -564,9 +600,8 @@ fn main() {
                         #[cfg(feature = "rt")]
                         #[hpm_riscv_rt::external_interrupt(hpm_metapac::interrupt::#irq_name)]
                         fn #irq_name() {
-                            use crate::interrupt::InterruptExt;
                             crate::embassy::time_driver_impl::on_interrupt();
-                            crate::interrupt::#irq_name.complete();
+                            crate::interrupt::InterruptExt::complete(crate::interrupt::#irq_name);
                         }
                     });
                 }
@@ -612,11 +647,10 @@ fn main() {
             g.extend(quote! {
                 #[hpm_riscv_rt::external_interrupt(hpm_metapac::interrupt::#irq_ident)]
                 fn #irq_ident() {
-                    use crate::interrupt::InterruptExt;
                     unsafe { crate::gpio::input_future::on_interrupt(crate::pac::GPIO0, #port_offset) };
 
                     core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
-                    crate::interrupt::#irq_ident.complete();
+                    crate::interrupt::InterruptExt::complete(crate::interrupt::#irq_ident);
                 }
             });
             gg.extend(quote! {

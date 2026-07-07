@@ -153,6 +153,54 @@ variants:
           - core0
     flash_algorithms:
       - flash-algo-hpm6300
+  - name: HPM5E31
+    jtag:
+      scan_chain:
+        - name: cpu
+          ir_len: 5
+    cores:
+      - name: core0
+        type: riscv
+        core_access_options: !Riscv {}
+    stack_size: 1024
+    memory_map:
+      - !Ram
+        name: ILM0
+        range:
+          start: 0x0
+          end: 0x20000
+        cores:
+          - core0
+      - !Ram
+        name: DLM0
+        range:
+          start: 0x00200000
+          end: 0x00220000
+        cores:
+          - core0
+      - !Ram
+        name: AXI_SRAM
+        range:
+          start: 0x01200000
+          end: 0x01240000
+        cores:
+          - core0
+      - !Ram
+        name: AHB_SRAM
+        range:
+          start: 0xf0200000
+          end: 0xf0208000
+        cores:
+          - core0
+      - !Nvm
+        name: XPI0
+        range:
+          start: 0x80000000
+          end: 0x80100000
+        cores:
+          - core0
+    flash_algorithms:
+      - flash-algo-hpm5300
   - name: HPM6E80
     cores:
       - name: core0

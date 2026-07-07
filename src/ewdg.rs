@@ -165,7 +165,10 @@ impl<'d, T: Instance> Watchdog<'d, T> {
         // Write with parity
         r.ctrl0().write_value(pac::ewdg::regs::Ctrl0(calc_parity(ctrl0.0)));
 
-        Self { _peri: peri, clock_freq }
+        Self {
+            _peri: peri,
+            clock_freq,
+        }
     }
 
     /// Start the watchdog with specified timeout
@@ -207,7 +210,9 @@ impl<'d, T: Instance> Watchdog<'d, T> {
     /// Feed (refresh) the watchdog to prevent reset
     #[inline]
     pub fn feed(&mut self) {
-        T::regs().wdt_refresh_reg().write_value(pac::ewdg::regs::WdtRefreshReg(REFRESH_KEY));
+        T::regs()
+            .wdt_refresh_reg()
+            .write_value(pac::ewdg::regs::WdtRefreshReg(REFRESH_KEY));
     }
 
     /// Stop the watchdog
@@ -310,4 +315,3 @@ impl SealedInstance for crate::peripherals::PWDG {
 }
 #[cfg(peri_pwdg)]
 impl Instance for crate::peripherals::PWDG {}
-

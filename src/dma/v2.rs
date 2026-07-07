@@ -121,9 +121,9 @@ impl ChannelState {
 
 pub(crate) unsafe fn init(cs: critical_section::CriticalSection) {
     use crate::interrupt;
-    use crate::sysctl::SealedClockPeripheral;
-
-    crate::peripherals::HDMA::add_resource_group(0);
+    crate::sysctl::clock_add_to_group(pac::resources::HDMA, 0);
+    #[cfg(any(hpm6e, hpm5e))]
+    crate::sysctl::clock_add_to_group(pac::resources::XDMA, 0);
 
     pac::HDMA.dmactrl().modify(|w| w.set_reset(true));
 
@@ -142,7 +142,7 @@ impl super::ControllerInterrupt for crate::peripherals::HDMA {
     }
 }
 
-#[cfg(hpm6e)]
+#[cfg(any(hpm6e, hpm5e))]
 impl super::ControllerInterrupt for crate::peripherals::XDMA {
     unsafe fn on_irq() {
         dma_on_irq(pac::XDMA, 32);

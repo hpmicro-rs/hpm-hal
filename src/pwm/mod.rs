@@ -219,8 +219,7 @@ impl<'d, T: Instance> SimplePwm<'d, T> {
         });
 
         // Configure shadow update mode
-        r.shcr()
-            .modify(|w| w.set_cntshdwupt(config.shadow_update.into()));
+        r.shcr().modify(|w| w.set_cntshdwupt(config.shadow_update.into()));
 
         // Start counter
         r.gcr().modify(|w| w.set_cen(true));
@@ -753,4 +752,3 @@ impl SealedInstance for crate::peripherals::PWM3 {
 }
 #[cfg(peri_pwm3)]
 impl Instance for crate::peripherals::PWM3 {}
-

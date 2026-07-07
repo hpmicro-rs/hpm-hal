@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>HPM Monitor</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <header>
+      <h1>HPM Monitor</h1>
+      <div class="status" id="status">idle</div>
+    </header>
+
+    <main>
+      <section class="toolbar">
+        <label>
+          Port
+          <select id="port"></select>
+        </label>
+        <label class="elf">
+          ELF
+          <input id="elf" type="text" />
+        </label>
+        <button id="refresh">Read</button>
+        <button id="poll">Start Poll</button>
+      </section>
+
+      <section class="summary">
+        <div>
+          <span>VID/PID</span>
+          <strong id="vidpid">-</strong>
+        </div>
+        <div>
+          <span>Version</span>
+          <strong id="version">-</strong>
+        </div>
+        <div>
+          <span>Packet</span>
+          <strong id="packet">-</strong>
+        </div>
+      </section>
+
+      <section class="grid">
+        <div class="panel">
+          <h2>Blinky</h2>
+          <table id="blinky"></table>
+        </div>
+        <div class="panel">
+          <h2>CSR</h2>
+          <table id="csr"></table>
+        </div>
+        <div class="panel wide">
+          <h2>USB</h2>
+          <table id="usb"></table>
+        </div>
+        <div class="panel wide">
+          <h2>Exception</h2>
+          <table id="exception"></table>
+        </div>
+      </section>
+
+      <section class="panel webusb">
+        <h2>WebUSB Direct</h2>
+        <p>当前固件通过 USB CDC 暴露 monitor。WebUSB 直连需要后续增加 vendor interface 和 WebUSB BOS 描述符；前端 transport 会接入同一套 packet 编码。</p>
+        <button id="webusb">Probe WebUSB</button>
+        <pre id="webusb-log"></pre>
+      </section>
+    </main>
+
+    <script type="module" src="/main.js"></script>
+  </body>
+</html>

@@ -43,6 +43,7 @@ pub mod mode {
 
 // required peripherals
 pub mod dma;
+#[cfg(xpi)]
 pub mod flash;
 pub mod sysctl;
 
@@ -147,14 +148,11 @@ macro_rules! bind_interrupts {
             #[$crate::external_interrupt($crate::pac::interrupt::$irq)]
             #[allow(non_snake_case)]
             unsafe fn $irq() {
-                use $crate::interrupt::InterruptExt;
-
                 $(
                     <$handler as $crate::interrupt::typelevel::Handler<$crate::interrupt::typelevel::$irq>>::on_interrupt();
                 )*
 
-                // notify PLIC that the interrupt has been handled
-                $crate::interrupt::$irq.complete();
+                $crate::interrupt::InterruptExt::complete($crate::interrupt::$irq);
             }
 
             $(

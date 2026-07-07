@@ -1,5 +1,5 @@
 use core::marker::PhantomData;
-use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
 
 use bus::Bus;
 use control_pipe::ControlPipe;
@@ -11,7 +11,7 @@ use endpoint::{Endpoint, EpConfig};
 use hpm_metapac::usb::regs::Usbsts;
 use riscv::delay::McycleDelay;
 use types::{Qhd, Qtd};
-#[cfg(any(hpm53, hpm68, hpm6e))]
+#[cfg(any(hpm53, hpm68, hpm6e, hpm5e))]
 use types_v53 as types;
 #[cfg(any(hpm67, hpm63, hpm62))]
 use types_v62 as types;
@@ -32,12 +32,19 @@ pub struct Config {
     /// When `true`, the USB controller will be forced to Full-Speed mode
     /// by setting PORTSC1.PFSC bit.
     pub force_full_speed: bool,
+
+    /// Use the PHY internal VBUS/session-valid override.
+    ///
+    /// Enable this for boards where the USB VBUS signal is not wired to the
+    /// controller's VBUS sense input.
+    pub use_internal_vbus: bool,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             force_full_speed: false,
+            use_internal_vbus: false,
         }
     }
 }
@@ -52,7 +59,7 @@ impl Default for Config {
 #[cfg(not(hpm67))]
 pub(crate) fn local_to_sys_address(addr: u32) -> u32 {
     // Single-core chips: identity function
-    // HPM5300, HPM6200, HPM6300, HPM6800, HPM6E00
+    // HPM5300, HPM6200, HPM6300, HPM6800, HPM6E00, HPM5E00
     addr
 }
 
@@ -97,7 +104,7 @@ mod bus;
 mod control_pipe;
 mod endpoint;
 mod state;
-#[cfg(any(hpm53, hpm68, hpm6e))]
+#[cfg(any(hpm53, hpm68, hpm6e, hpm5e))]
 mod types_v53;
 #[cfg(any(hpm67, hpm63, hpm62))]
 mod types_v62;
@@ -107,6 +114,24 @@ pub use state::EndpointState;
 static IRQ_RESET: AtomicBool = AtomicBool::new(false);
 static IRQ_SUSPEND: AtomicBool = AtomicBool::new(false);
 static IRQ_VBUS_CHANGE: AtomicBool = AtomicBool::new(false);
+
+pub static USB_DEBUG_STAGE: AtomicU32 = AtomicU32::new(0);
+pub static USB_DEBUG_USBSTS: AtomicU32 = AtomicU32::new(0);
+pub static USB_DEBUG_USBINTR: AtomicU32 = AtomicU32::new(0);
+pub static USB_DEBUG_PORTSC1: AtomicU32 = AtomicU32::new(0);
+pub static USB_DEBUG_OTGSC: AtomicU32 = AtomicU32::new(0);
+pub static USB_DEBUG_PHY_CTRL0: AtomicU32 = AtomicU32::new(0);
+pub static USB_DEBUG_USBCMD: AtomicU32 = AtomicU32::new(0);
+pub static USB_DEBUG_USBMODE: AtomicU32 = AtomicU32::new(0);
+pub static USB_DEBUG_IRQ_COUNT: AtomicU32 = AtomicU32::new(0);
+#[unsafe(no_mangle)]
+pub static USB_DEBUG_QTD_DATA_PTR: AtomicU32 = AtomicU32::new(0);
+#[unsafe(no_mangle)]
+pub static USB_DEBUG_QTD_SYS_ADDR: AtomicU32 = AtomicU32::new(0);
+#[unsafe(no_mangle)]
+pub static USB_DEBUG_QTD_ADDR: AtomicU32 = AtomicU32::new(0);
+#[unsafe(no_mangle)]
+pub static USB_DEBUG_QTD_LEN: AtomicU32 = AtomicU32::new(0);
 
 /// Global pointer to the active EndpointState.
 /// Set by UsbDriver::new(), accessed by Endpoint transfer operations.
@@ -189,6 +214,8 @@ pub(crate) unsafe fn reset_dcd_data(ep_state: &EndpointState, ep0_max_packet_siz
     // Set the next pointer INVALID(T=1)
     qhd_list.qhd(0).next_dtd().write(|w| w.set_t(true));
     qhd_list.qhd(1).next_dtd().write(|w| w.set_t(true));
+
+    core::arch::asm!("fence rw, rw", options(nostack, preserves_flags));
 }
 
 pub(crate) unsafe fn init_qhd(ep_state: &EndpointState, ep_config: &EpConfig) {
@@ -226,6 +253,10 @@ impl Qtd {
     }
 
     pub(crate) fn reinit_with(&mut self, data: &[u8], transfer_bytes: usize) {
+        USB_DEBUG_QTD_ADDR.store(self.as_ptr() as u32, Ordering::Relaxed);
+        USB_DEBUG_QTD_DATA_PTR.store(data.as_ptr() as u32, Ordering::Relaxed);
+        USB_DEBUG_QTD_LEN.store(transfer_bytes as u32, Ordering::Relaxed);
+
         // Initialize qtd
         self.reset();
 
@@ -263,6 +294,7 @@ impl Qtd {
         // Convert buffer address to system address for DMA access
         // Reference: HPMicro C SDK uses core_local_mem_to_sys_address() for buffer
         let sys_addr = local_to_sys_address(data.as_ptr() as u32);
+        USB_DEBUG_QTD_SYS_ADDR.store(sys_addr, Ordering::Relaxed);
 
         // Fill data into qtd
         self.buffer(0).modify(|w| w.set_buffer((sys_addr & 0xFFFFF000) >> 12));
@@ -371,7 +403,15 @@ impl<'d, T: Instance> UsbDriver<'d, T> {
         let mut delay = McycleDelay::new(sysctl::clocks().cpu0.0);
         delay.delay_ms(100);
 
-        // Enable internal vbus when reuse pins
+        if config.use_internal_vbus {
+            r.phy_ctrl0().modify(|w| {
+                w.set_vbus_valid_override(true);
+                w.set_sess_valid_override(true);
+                w.set_vbus_valid_override_en(true);
+                w.set_sess_valid_override_en(true);
+            });
+        }
+
         #[cfg(feature = "usb-pin-reuse-hpm5300")]
         r.phy_ctrl0().modify(|w| {
             w.set_vbus_valid_override(true);
@@ -625,29 +665,41 @@ impl<T: Instance> crate::interrupt::typelevel::Handler<T::Interrupt> for Interru
 /// USB interrupt handler
 pub unsafe fn on_interrupt<T: Instance>() {
     let r = T::info().regs;
+    USB_DEBUG_IRQ_COUNT.fetch_add(1, Ordering::Relaxed);
+    USB_DEBUG_STAGE.store(0x700, Ordering::Relaxed);
 
     // Get triggered interrupts
     let status = r.usbsts().read();
     let enabled_interrupts = r.usbintr().read();
+    USB_DEBUG_USBSTS.store(status.0, Ordering::Relaxed);
+    USB_DEBUG_USBINTR.store(enabled_interrupts.0, Ordering::Relaxed);
+    USB_DEBUG_PORTSC1.store(r.portsc1().read().0, Ordering::Relaxed);
+    USB_DEBUG_OTGSC.store(r.otgsc().read().0, Ordering::Relaxed);
+    USB_DEBUG_PHY_CTRL0.store(r.phy_ctrl0().read().0, Ordering::Relaxed);
+    USB_DEBUG_USBCMD.store(r.usbcmd().read().0, Ordering::Relaxed);
+    USB_DEBUG_USBMODE.store(r.usbmode().read().0, Ordering::Relaxed);
 
     // Clear triggered interrupts status bits
     let triggered_interrupts = status.0 & enabled_interrupts.0;
 
     let status = Usbsts(triggered_interrupts);
-    r.usbsts().modify(|w| w.0 = w.0);
+    r.usbsts().write_value(status);
 
     // Disabled interrupt sources
     if status.0 == 0 {
+        USB_DEBUG_STAGE.store(0x701, Ordering::Relaxed);
         return;
     }
 
     // Reset event
     if status.uri() {
+        USB_DEBUG_STAGE.store(0x710, Ordering::Relaxed);
         // Set IRQ_RESET signal
         IRQ_RESET.store(true, Ordering::Relaxed);
 
-        // Disable USB reset interrupt while processing RESET event
-        r.usbintr().modify(|w| w.set_ure(false));
+        // Disable USB reset interrupt while processing RESET event.
+        let intr = r.usbintr().read().0 & !0x40;
+        r.usbintr().write(|w| w.0 = intr);
 
         // Wake USB bus. Then the reset event will be processed in Bus::poll()
         BUS_WAKER.wake();
@@ -655,6 +707,7 @@ pub unsafe fn on_interrupt<T: Instance>() {
 
     // Suspend event
     if status.sli() {
+        USB_DEBUG_STAGE.store(0x720, Ordering::Relaxed);
         // Set IRQ_SUSPEND signal
         IRQ_SUSPEND.store(true, Ordering::Relaxed);
 
@@ -664,6 +717,7 @@ pub unsafe fn on_interrupt<T: Instance>() {
 
     // Port change event
     if status.pci() {
+        USB_DEBUG_STAGE.store(0x730, Ordering::Relaxed);
         if r.portsc1().read().ccs() {
             // Connected
             r.usbintr().modify(|w| w.set_pce(false));
@@ -676,6 +730,7 @@ pub unsafe fn on_interrupt<T: Instance>() {
 
     // Transfer complete event
     if status.ui() {
+        USB_DEBUG_STAGE.store(0x740, Ordering::Relaxed);
         // Disable USB transfer interrupt
         r.usbintr().modify(|w| w.set_ue(false));
 

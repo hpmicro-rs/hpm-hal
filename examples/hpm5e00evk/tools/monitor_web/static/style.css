@@ -1,0 +1,175 @@
+:root {
+  color-scheme: light dark;
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #f5f7fb;
+  color: #172033;
+}
+
+body {
+  margin: 0;
+}
+
+header {
+  align-items: center;
+  background: #101827;
+  color: #fff;
+  display: flex;
+  justify-content: space-between;
+  padding: 16px 24px;
+}
+
+h1,
+h2 {
+  letter-spacing: 0;
+  margin: 0;
+}
+
+h1 {
+  font-size: 20px;
+}
+
+h2 {
+  font-size: 15px;
+  margin-bottom: 12px;
+}
+
+main {
+  margin: 0 auto;
+  max-width: 1180px;
+  padding: 20px;
+}
+
+button,
+input,
+select {
+  border: 1px solid #cbd3df;
+  border-radius: 6px;
+  font: inherit;
+  min-height: 36px;
+}
+
+button {
+  background: #1d4ed8;
+  color: #fff;
+  cursor: pointer;
+  padding: 0 14px;
+}
+
+button.secondary {
+  background: #334155;
+}
+
+input,
+select {
+  background: #fff;
+  color: #111827;
+  padding: 0 10px;
+}
+
+label {
+  display: grid;
+  font-size: 12px;
+  gap: 4px;
+}
+
+.toolbar {
+  align-items: end;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(180px, 240px) minmax(280px, 1fr) auto auto;
+}
+
+.status {
+  background: #243044;
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  padding: 6px 10px;
+}
+
+.summary {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 18px 0;
+}
+
+.summary div,
+.panel {
+  background: #fff;
+  border: 1px solid #dce3ee;
+  border-radius: 8px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+.summary div {
+  display: grid;
+  gap: 6px;
+  padding: 14px;
+}
+
+.summary span {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.summary strong {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 16px;
+}
+
+.grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.panel {
+  padding: 14px;
+}
+
+.wide {
+  grid-column: span 2;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+td {
+  border-top: 1px solid #eef2f7;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  padding: 7px 4px;
+}
+
+td:first-child {
+  color: #475569;
+  width: 42%;
+}
+
+.webusb {
+  margin-top: 14px;
+}
+
+pre {
+  background: #0f172a;
+  border-radius: 6px;
+  color: #dbeafe;
+  min-height: 42px;
+  overflow: auto;
+  padding: 10px;
+}
+
+@media (max-width: 760px) {
+  .toolbar,
+  .summary,
+  .grid {
+    grid-template-columns: 1fr;
+  }
+
+  .wide {
+    grid-column: span 1;
+  }
+}

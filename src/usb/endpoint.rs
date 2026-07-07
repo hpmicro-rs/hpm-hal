@@ -2,9 +2,9 @@ use core::future::poll_fn;
 use core::marker::PhantomData;
 use core::task::Poll;
 
-use embassy_usb_driver::{EndpointAddress, EndpointIn, EndpointInfo, EndpointOut};
-
+use critical_section::with;
 use embassy_sync::waitqueue::AtomicWaker;
+use embassy_usb_driver::{EndpointAddress, EndpointIn, EndpointInfo, EndpointOut};
 
 use super::{QTD_COUNT_EACH_QHD, get_active_ep_state, local_to_sys_address};
 use crate::usb::{EP_IN_WAKERS, EP_OUT_WAKERS, Instance};
@@ -103,88 +103,90 @@ impl<'d, T: Instance, D> Endpoint<'d, T, D> {
             return Err(TransferError::BufferAlignment);
         }
 
-        // Add all data to the circular queue
-        let mut prev_qtd: Option<usize> = None;
-        let mut first_qtd: Option<usize> = None;
-        let mut i = 0;
-        let mut data_offset = 0;
-        let mut remaining_bytes = data.len();
-        loop {
-            let qtd_idx = ep_idx * QTD_COUNT_EACH_QHD + i;
-            i += 1;
+        with(|_| {
+            // Add all data to the circular queue
+            let mut prev_qtd: Option<usize> = None;
+            let mut first_qtd: Option<usize> = None;
+            let mut i = 0;
+            let mut data_offset = 0;
+            let mut remaining_bytes = data.len();
+            loop {
+                let qtd_idx = ep_idx * QTD_COUNT_EACH_QHD + i;
+                i += 1;
 
-            // If the transfer size > 0x4000, then there should be multiple qtds in the linked list
-            let transfer_bytes = if remaining_bytes > 0x4000 {
-                remaining_bytes -= 0x4000;
-                0x4000
-            } else {
-                remaining_bytes = 0;
-                data.len()
-            };
-
-            // Initialize qtd with the data (address conversion is done inside reinit_with)
-            unsafe {
-                let ep_state = get_active_ep_state();
-                ep_state
-                    .qtd_list()
-                    .qtd(qtd_idx)
-                    .reinit_with(&data[data_offset..], transfer_bytes)
-            };
-
-            // Last chunk of the data
-            if remaining_bytes == 0 {
-                unsafe {
-                    let ep_state = get_active_ep_state();
-                    ep_state.qtd_list().qtd(qtd_idx).qtd_token().modify(|w| w.set_ioc(true));
+                // If the transfer size > 0x4000, then there should be multiple qtds in the linked list
+                let transfer_bytes = if remaining_bytes > 0x4000 {
+                    remaining_bytes -= 0x4000;
+                    0x4000
+                } else {
+                    remaining_bytes = 0;
+                    data.len()
                 };
-            }
 
-            data_offset += transfer_bytes;
-
-            // Set qtd linked list
-            // Note: C SDK does NOT convert QTD->QTD address, only QHD->QTD address
-            if let Some(prev_qtd) = prev_qtd {
+                // Initialize qtd with the data (address conversion is done inside reinit_with)
                 unsafe {
                     let ep_state = get_active_ep_state();
-                    let qtd_addr = ep_state.qtd_list().qtd(qtd_idx).as_ptr() as u32;
                     ep_state
                         .qtd_list()
-                        .qtd(prev_qtd)
-                        .next_dtd()
-                        .modify(|w| w.set_next_dtd_addr(qtd_addr >> 5));
+                        .qtd(qtd_idx)
+                        .reinit_with(&data[data_offset..], transfer_bytes)
+                };
+
+                // Last chunk of the data
+                if remaining_bytes == 0 {
+                    unsafe {
+                        let ep_state = get_active_ep_state();
+                        ep_state.qtd_list().qtd(qtd_idx).qtd_token().modify(|w| w.set_ioc(true));
+                    };
                 }
-            } else {
-                first_qtd = Some(qtd_idx);
+
+                data_offset += transfer_bytes;
+
+                // Set qtd linked list
+                // Note: C SDK does NOT convert QTD->QTD address, only QHD->QTD address
+                if let Some(prev_qtd) = prev_qtd {
+                    unsafe {
+                        let ep_state = get_active_ep_state();
+                        let qtd_addr = ep_state.qtd_list().qtd(qtd_idx).as_ptr() as u32;
+                        ep_state
+                            .qtd_list()
+                            .qtd(prev_qtd)
+                            .next_dtd()
+                            .modify(|w| w.set_next_dtd_addr(qtd_addr >> 5));
+                    }
+                } else {
+                    first_qtd = Some(qtd_idx);
+                }
+
+                prev_qtd = Some(qtd_idx);
+
+                // Check the remaining_bytes
+                if remaining_bytes == 0 {
+                    break;
+                }
             }
 
-            prev_qtd = Some(qtd_idx);
+            // Link qtd to qhd (convert to system address for DMA)
+            let first_idx = first_qtd.unwrap();
 
-            // Check the remaining_bytes
-            if remaining_bytes == 0 {
-                break;
-            }
-        }
-
-        // Link qtd to qhd (convert to system address for DMA)
-        let first_idx = first_qtd.unwrap();
-
-        unsafe {
-            let ep_state = get_active_ep_state();
-            if ep_num == 0 {
-                ep_state.qhd_list().qhd(ep_idx).cap().modify(|w| {
-                    w.set_ios(true);
+            unsafe {
+                let ep_state = get_active_ep_state();
+                if ep_num == 0 {
+                    ep_state.qhd_list().qhd(ep_idx).cap().modify(|w| {
+                        w.set_ios(true);
+                    });
+                }
+                let qtd_addr = local_to_sys_address(ep_state.qtd_list().qtd(first_idx).as_ptr() as u32);
+                ep_state.qhd_list().qhd(ep_idx).next_dtd().modify(|w| {
+                    w.set_next_dtd_addr(qtd_addr >> 5);
+                    // T **MUST** be set to 0
+                    w.set_t(false);
                 });
             }
-            let qtd_addr = local_to_sys_address(ep_state.qtd_list().qtd(first_idx).as_ptr() as u32);
-            ep_state.qhd_list().qhd(ep_idx).next_dtd().modify(|w| {
-                w.set_next_dtd_addr(qtd_addr >> 5);
-                // T **MUST** be set to 0
-                w.set_t(false);
-            });
-        }
 
-        // Start transfer
-        self.start_transfer();
+            // Start transfer
+            self.start_transfer();
+        });
 
         Ok(())
     }
@@ -232,12 +234,13 @@ impl<'d, T: Instance> EndpointOut for Endpoint<'d, T, Out> {
         }
 
         // Start read and wait
-        self.transfer(buf).map_err(|_| embassy_usb_driver::EndpointError::BufferOverflow)?;
+        self.transfer(buf)
+            .map_err(|_| embassy_usb_driver::EndpointError::BufferOverflow)?;
         poll_fn(|cx| {
             Out::waker(ep_num).register(cx.waker());
 
             if r.endptcomplete().read().erce() & (1 << ep_num) != 0 {
-                r.endptcomplete().modify(|w| w.set_erce(1 << ep_num));
+                r.endptcomplete().write(|w| w.set_erce(1 << ep_num));
                 Poll::Ready(())
             } else if !Out::is_enabled(r, ep_num) {
                 Poll::Ready(())
@@ -267,11 +270,12 @@ impl<'d, T: Instance> EndpointIn for Endpoint<'d, T, In> {
         }
 
         // Start write and wait
-        self.transfer(buf).map_err(|_| embassy_usb_driver::EndpointError::BufferOverflow)?;
+        self.transfer(buf)
+            .map_err(|_| embassy_usb_driver::EndpointError::BufferOverflow)?;
         poll_fn(|cx| {
             In::waker(ep_num).register(cx.waker());
             if r.endptcomplete().read().etce() & (1 << ep_num) != 0 {
-                r.endptcomplete().modify(|w| w.set_etce(1 << ep_num));
+                r.endptcomplete().write(|w| w.set_etce(1 << ep_num));
                 Poll::Ready(())
             } else if !In::is_enabled(r, ep_num) {
                 Poll::Ready(())
@@ -287,7 +291,7 @@ impl<'d, T: Instance> EndpointIn for Endpoint<'d, T, In> {
             poll_fn(|cx| {
                 In::waker(ep_num).register(cx.waker());
                 if r.endptcomplete().read().etce() & (1 << ep_num) != 0 {
-                    r.endptcomplete().modify(|w| w.set_etce(1 << ep_num));
+                    r.endptcomplete().write(|w| w.set_etce(1 << ep_num));
                     Poll::Ready(())
                 } else {
                     Poll::Pending

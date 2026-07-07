@@ -4,5 +4,7 @@ use crate::pac::sysctl::vals::AnaClkMux;
 
 impl_ana_clock_periph!(ADC0, ANA0, ADC0, adcclk, 0);
 impl_ana_clock_periph!(ADC1, ANA1, ADC1, adcclk, 1);
+#[cfg(hpm6e)]
 impl_ana_clock_periph!(ADC2, ANA2, ADC2, adcclk, 2);
+#[cfg(hpm6e)]
 impl_ana_clock_periph!(ADC3, ANA3, ADC3, adcclk, 3);

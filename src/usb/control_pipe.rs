@@ -4,9 +4,8 @@ use core::task::Poll;
 use embassy_usb_driver::EndpointError;
 use futures_util::future::poll_fn;
 
-use super::Instance;
 use super::endpoint::{Endpoint, In, Out};
-use super::get_active_ep_state;
+use super::{Instance, get_active_ep_state};
 use crate::usb::{EP_IN_WAKERS, EP_OUT_WAKERS};
 
 pub struct ControlPipe<'d, T: Instance> {
@@ -27,16 +26,13 @@ impl<'d, T: Instance> embassy_usb_driver::ControlPipe for ControlPipe<'d, T> {
         let r = T::info().regs;
 
         // Clear interrupt status(by writing 1) and enable USB interrupt first
-        r.usbsts().modify(|w| w.set_ui(true));
+        r.usbsts().write(|w| w.set_ui(true));
         while r.usbsts().read().ui() {}
         r.usbintr().modify(|w| w.set_ue(true));
         // Wait for SETUP packet
         let _ = poll_fn(|cx| {
             EP_OUT_WAKERS[0].register(cx.waker());
             if r.endptsetupstat().read().0 & 1 > 0 {
-                // Clear the flag
-                r.endptsetupstat().modify(|w| w.set_endptsetupstat(1));
-                r.endptcomplete().modify(|w| w.set_erce(1));
                 return Poll::Ready(Ok::<(), ()>(()));
             }
 
@@ -44,16 +40,27 @@ impl<'d, T: Instance> embassy_usb_driver::ControlPipe for ControlPipe<'d, T> {
         })
         .await;
 
+        // Read setup packet from qHD using the setup tripwire sequence.
+        let setup = unsafe {
+            let ep_state = get_active_ep_state();
+            loop {
+                r.usbcmd().modify(|w| w.set_sutw(true));
+                let setup = ep_state.qhd_list().qhd(0).get_setup_request();
+                if r.usbcmd().read().sutw() {
+                    break setup;
+                }
+            }
+        };
+        r.usbcmd().modify(|w| w.set_sutw(false));
+        r.endptsetupstat().write(|w| w.set_endptsetupstat(1));
+        r.endptcomplete().write(|w| w.set_erce(1));
+
         // Clear interrupt status and re-enable USB interrupt
-        r.usbsts().modify(|w| w.set_ui(true));
+        r.usbsts().write(|w| w.set_ui(true));
         while r.usbsts().read().ui() {}
         r.usbintr().modify(|w| w.set_ue(true));
 
-        // Read setup packet from qhd
-        unsafe {
-            let ep_state = get_active_ep_state();
-            ep_state.qhd_list().qhd(0).get_setup_request()
-        }
+        setup
     }
 
     /// Read a DATA OUT packet into `buf` in response to a control write request.
@@ -72,7 +79,7 @@ impl<'d, T: Instance> embassy_usb_driver::ControlPipe for ControlPipe<'d, T> {
             EP_OUT_WAKERS[0].register(cx.waker());
             if r.endptcomplete().read().erce() & 1 > 0 {
                 // Clear the flag
-                r.endptcomplete().modify(|w| w.set_erce(1));
+                r.endptcomplete().write(|w| w.set_erce(1));
                 return Poll::Ready(Ok::<(), ()>(()));
             }
 
@@ -93,15 +100,13 @@ impl<'d, T: Instance> embassy_usb_driver::ControlPipe for ControlPipe<'d, T> {
         last: bool,
     ) -> Result<(), embassy_usb_driver::EndpointError> {
         let r = T::info().regs;
-        self.ep_in
-            .transfer(data)
-            .map_err(|_| EndpointError::BufferOverflow)?;
+        self.ep_in.transfer(data).map_err(|_| EndpointError::BufferOverflow)?;
 
         let _ = poll_fn(|cx| {
             EP_IN_WAKERS[0].register(cx.waker());
             if r.endptcomplete().read().etce() & 1 > 0 {
                 // Clear the flag
-                r.endptcomplete().modify(|w| w.set_etce(1));
+                r.endptcomplete().write(|w| w.set_etce(1));
                 return Poll::Ready(Ok::<(), ()>(()));
             }
 
@@ -128,7 +133,7 @@ impl<'d, T: Instance> embassy_usb_driver::ControlPipe for ControlPipe<'d, T> {
             EP_IN_WAKERS[0].register(cx.waker());
             if r.endptcomplete().read().etce() & 1 > 0 {
                 // Clear the flag
-                r.endptcomplete().modify(|w| w.set_etce(1));
+                r.endptcomplete().write(|w| w.set_etce(1));
                 return Poll::Ready(Ok::<(), ()>(()));
             }
 

@@ -174,10 +174,7 @@ impl<'d, T: BasicInstance> LowLevelTimer<'d, T> {
     /// Enable debug pause (counter pauses when chip is in debug mode)
     #[inline]
     pub fn set_debug_pause(&self, ch: Channel, enable: bool) {
-        Self::regs()
-            .channel(ch.index())
-            .cr()
-            .modify(|w| w.set_dbgpause(enable));
+        Self::regs().channel(ch.index()).cr().modify(|w| w.set_dbgpause(enable));
     }
 
     // === Counter Access ===
@@ -230,10 +227,7 @@ impl<'d, T: BasicInstance> LowLevelTimer<'d, T> {
         } else {
             value
         };
-        Self::regs()
-            .channel(ch.index())
-            .cmp(cmp_idx)
-            .write_value(hw_value);
+        Self::regs().channel(ch.index()).cmp(cmp_idx).write_value(hw_value);
     }
 
     /// Get compare value
@@ -246,19 +240,13 @@ impl<'d, T: BasicInstance> LowLevelTimer<'d, T> {
     /// Enable compare output
     #[inline]
     pub fn enable_compare_output(&self, ch: Channel, enable: bool) {
-        Self::regs()
-            .channel(ch.index())
-            .cr()
-            .modify(|w| w.set_cmpen(enable));
+        Self::regs().channel(ch.index()).cr().modify(|w| w.set_cmpen(enable));
     }
 
     /// Set compare output initial polarity (true = high, false = low)
     #[inline]
     pub fn set_compare_initial_high(&self, ch: Channel, high: bool) {
-        Self::regs()
-            .channel(ch.index())
-            .cr()
-            .modify(|w| w.set_cmpinit(high));
+        Self::regs().channel(ch.index()).cr().modify(|w| w.set_cmpinit(high));
     }
 
     // === Capture ===
@@ -301,10 +289,7 @@ impl<'d, T: BasicInstance> LowLevelTimer<'d, T> {
     /// Enable DMA request
     #[inline]
     pub fn enable_dma(&self, ch: Channel, enable: bool) {
-        Self::regs()
-            .channel(ch.index())
-            .cr()
-            .modify(|w| w.set_dmaen(enable));
+        Self::regs().channel(ch.index()).cr().modify(|w| w.set_dmaen(enable));
     }
 
     /// Set DMA trigger event
@@ -321,24 +306,22 @@ impl<'d, T: BasicInstance> LowLevelTimer<'d, T> {
     /// Set sync input edge
     #[inline]
     pub fn set_sync_edge(&self, ch: Channel, edge: SyncEdge) {
-        Self::regs().channel(ch.index()).cr().modify(|w| {
-            match edge {
-                SyncEdge::None => {
-                    w.set_synciren(false);
-                    w.set_syncifen(false);
-                }
-                SyncEdge::Rising => {
-                    w.set_synciren(true);
-                    w.set_syncifen(false);
-                }
-                SyncEdge::Falling => {
-                    w.set_synciren(false);
-                    w.set_syncifen(true);
-                }
-                SyncEdge::Both => {
-                    w.set_synciren(true);
-                    w.set_syncifen(true);
-                }
+        Self::regs().channel(ch.index()).cr().modify(|w| match edge {
+            SyncEdge::None => {
+                w.set_synciren(false);
+                w.set_syncifen(false);
+            }
+            SyncEdge::Rising => {
+                w.set_synciren(true);
+                w.set_syncifen(false);
+            }
+            SyncEdge::Falling => {
+                w.set_synciren(false);
+                w.set_syncifen(true);
+            }
+            SyncEdge::Both => {
+                w.set_synciren(true);
+                w.set_syncifen(true);
             }
         });
     }
@@ -356,10 +339,7 @@ impl<'d, T: BasicInstance> LowLevelTimer<'d, T> {
     /// Note: Not valid for channel 0
     #[inline]
     pub fn enable_sync_follow(&self, ch: Channel, enable: bool) {
-        Self::regs()
-            .channel(ch.index())
-            .cr()
-            .modify(|w| w.set_syncflw(enable));
+        Self::regs().channel(ch.index()).cr().modify(|w| w.set_syncflw(enable));
     }
 
     /// Trigger software sync for channels (bitmask)
@@ -373,33 +353,25 @@ impl<'d, T: BasicInstance> LowLevelTimer<'d, T> {
     /// Enable reload interrupt
     #[inline]
     pub fn enable_reload_irq(&self, ch: Channel, enable: bool) {
-        Self::regs()
-            .irqen()
-            .modify(|w| w.set_chrlden(ch.index(), enable));
+        Self::regs().irqen().modify(|w| w.set_chrlden(ch.index(), enable));
     }
 
     /// Enable capture interrupt
     #[inline]
     pub fn enable_capture_irq(&self, ch: Channel, enable: bool) {
-        Self::regs()
-            .irqen()
-            .modify(|w| w.set_chcapen(ch.index(), enable));
+        Self::regs().irqen().modify(|w| w.set_chcapen(ch.index(), enable));
     }
 
     /// Enable compare 0 interrupt
     #[inline]
     pub fn enable_cmp0_irq(&self, ch: Channel, enable: bool) {
-        Self::regs()
-            .irqen()
-            .modify(|w| w.set_chcmp0en(ch.index(), enable));
+        Self::regs().irqen().modify(|w| w.set_chcmp0en(ch.index(), enable));
     }
 
     /// Enable compare 1 interrupt
     #[inline]
     pub fn enable_cmp1_irq(&self, ch: Channel, enable: bool) {
-        Self::regs()
-            .irqen()
-            .modify(|w| w.set_chcmp1en(ch.index(), enable));
+        Self::regs().irqen().modify(|w| w.set_chcmp1en(ch.index(), enable));
     }
 
     /// Get raw status register
@@ -480,10 +452,7 @@ impl<'d, T: BasicInstance> LowLevelTimer<'d, T> {
     #[cfg(any(tmr_v68, tmr_v6e))]
     #[inline]
     pub fn enable_oneshot(&self, ch: Channel, enable: bool) {
-        Self::regs()
-            .channel(ch.index())
-            .cr()
-            .modify(|w| w.set_opmode(enable));
+        Self::regs().channel(ch.index()).cr().modify(|w| w.set_opmode(enable));
     }
 
     /// Enable signal monitor
@@ -989,4 +958,3 @@ foreach_peripheral!(
 
 // Blanket implementation: any Instance with ClockPeripheral is a BasicInstance
 impl<T: Instance + crate::sysctl::ClockPeripheral> BasicInstance for T {}
-

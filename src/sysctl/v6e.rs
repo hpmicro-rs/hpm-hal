@@ -153,17 +153,21 @@ pub(crate) unsafe fn init(config: Config) {
     clock_add_to_group(pac::resources::CPU0, 0);
     clock_add_to_group(pac::resources::AHBP, 0);
     clock_add_to_group(pac::resources::AXIC, 0);
+    #[cfg(hpm6e)]
     clock_add_to_group(pac::resources::AXIN, 0);
     clock_add_to_group(pac::resources::AXIS, 0);
 
     clock_add_to_group(pac::resources::ROM0, 0);
     clock_add_to_group(pac::resources::RAM0, 0);
+    #[cfg(hpm6e)]
     clock_add_to_group(pac::resources::RAM1, 0);
     clock_add_to_group(pac::resources::XPI0, 0);
+    #[cfg(hpm6e)]
     clock_add_to_group(pac::resources::FEMC, 0);
 
     clock_add_to_group(pac::resources::MCT0, 0);
     clock_add_to_group(pac::resources::LMM0, 0);
+    #[cfg(hpm6e)]
     clock_add_to_group(pac::resources::LMM1, 0);
 
     clock_add_to_group(pac::resources::GPIO, 0);
@@ -173,15 +177,19 @@ pub(crate) unsafe fn init(config: Config) {
 
     // MBX clock resource is shared
     clock_add_to_group(pac::resources::MBX0, 0);
+    #[cfg(hpm6e)]
     clock_add_to_group(pac::resources::MBX1, 0);
 
     // Connect Group0 to CPU0
     SYSCTL.affiliate(0).set().write(|w| w.set_link(1 << 0));
 
-    clock_add_to_group(pac::resources::CPU1, 0);
-    clock_add_to_group(pac::resources::MCT1, 1);
+    #[cfg(hpm6e)]
+    {
+        clock_add_to_group(pac::resources::CPU1, 0);
+        clock_add_to_group(pac::resources::MCT1, 1);
 
-    SYSCTL.affiliate(1).set().write(|w| w.set_link(1 << 1));
+        SYSCTL.affiliate(1).set().write(|w| w.set_link(1 << 1));
+    }
 
     // Bump up DCDC voltage to 1175mv (default is 1150)
     pac::PCFG.dcdc_mode().modify(|w| w.set_volt(1200));
@@ -193,24 +201,37 @@ pub(crate) unsafe fn init(config: Config) {
         w.set_mux(config.cpu0.src);
         w.set_div(config.cpu0.raw_div);
     });
-    SYSCTL.clock(pac::clocks::CPU1).modify(|w| {
-        w.set_mux(config.cpu1.src);
-        w.set_div(config.cpu1.raw_div);
-    });
+    #[cfg(hpm6e)]
+    {
+        SYSCTL.clock(pac::clocks::CPU1).modify(|w| {
+            w.set_mux(config.cpu1.src);
+            w.set_div(config.cpu1.raw_div);
+        });
+    }
     SYSCTL.clock(pac::clocks::AHB0).modify(|w| {
         w.set_mux(config.ahb.src);
         w.set_div(config.ahb.raw_div);
     });
 
+    // Match the SDK board clock setup: MCHTMR runs from the 24 MHz oscillator.
+    SYSCTL.clock(pac::clocks::MCT0).modify(|w| {
+        w.set_mux(ClockMux::CLK_24M);
+        w.set_div(0);
+    });
+
     while SYSCTL.clock(0).read().glb_busy() {}
 
     let cpu0_clk = CLOCKS.get_freq(&config.cpu0);
+    #[cfg(hpm6e)]
     let cpu1_clk = CLOCKS.get_freq(&config.cpu1);
     let ahb_clk = CLOCKS.get_freq(&config.ahb);
 
     unsafe {
         CLOCKS.cpu0 = cpu0_clk;
-        CLOCKS.cpu1 = cpu1_clk;
+        #[cfg(hpm6e)]
+        {
+            CLOCKS.cpu1 = cpu1_clk;
+        }
         CLOCKS.ahb = ahb_clk;
     }
 }
