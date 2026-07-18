@@ -3,18 +3,19 @@
 #![feature(abi_riscv_interrupt)]
 #![feature(impl_trait_in_assoc_type)]
 
+use core::panic::PanicInfo;
 use core::ptr::{addr_of, addr_of_mut};
 use core::sync::atomic::{AtomicU32, Ordering};
 
+use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_usb::Builder;
-use embassy_usb::class::cdc_acm::{CdcAcmClass, Receiver, Sender, State};
-use embassy_usb::driver::EndpointError;
+use embassy_usb::driver::{Driver, Endpoint, EndpointError, EndpointIn, EndpointOut};
+use embassy_usb::msos::{CompatibleIdFeatureDescriptor, windows_version};
 use futures_util::future::join;
-use hal::usb::{EndpointState, Instance, UsbDriver};
+use hal::usb::EndpointState;
 use hpm_hal as hal;
 use hpm_hal::{bind_interrupts, peripherals};
-use panic_halt as _;
 use static_cell::StaticCell;
 
 const MONITOR_START_CMD: u16 = 0x4850;
@@ -52,7 +53,7 @@ const PAYLOAD_OFFSET: usize = 32;
 const MONITOR_INFO_SIZE: usize = 24;
 const MAX_PACKET_SIZE: usize = 512;
 const MAX_VALUE_COUNT: u16 = 32;
-const USB_MAX_PACKET_SIZE: usize = 64;
+const BULK_MAX_PACKET_SIZE: usize = 64;
 
 #[unsafe(no_mangle)]
 static mut MON_LOOP_COUNT: u32 = 0;
@@ -62,9 +63,13 @@ static mut MON_LED_STATE: u32 = 0;
 static mut MON_LAST_ERROR: u32 = 0;
 #[unsafe(no_mangle)]
 static mut MON_RX_PACKETS: u32 = 0;
+#[unsafe(no_mangle)]
+static MON_PANIC_LINE: AtomicU32 = AtomicU32::new(0);
+#[unsafe(no_mangle)]
+static MON_PANIC_COLUMN: AtomicU32 = AtomicU32::new(0);
 
 #[unsafe(no_mangle)]
-static EXCEPTION_MCAUSE: AtomicU32 = AtomicU32::new(0xffff_ffff);
+static EXCEPTION_MCAUSE: AtomicU32 = AtomicU32::new(0);
 #[unsafe(no_mangle)]
 static EXCEPTION_MEPC: AtomicU32 = AtomicU32::new(0);
 #[unsafe(no_mangle)]
@@ -211,31 +216,117 @@ static MON_USB_QTD_DATA_PTR: AtomicU32 = AtomicU32::new(0);
 static MON_USB_QTD_LEN: AtomicU32 = AtomicU32::new(0);
 #[unsafe(no_mangle)]
 static MON_USB_QTD_SYS_ADDR: AtomicU32 = AtomicU32::new(0);
-
+#[unsafe(no_mangle)]
+#[unsafe(link_section = ".noncacheable")]
+static MON_USB_TRACE_RX_LEN: AtomicU32 = AtomicU32::new(0);
+#[unsafe(no_mangle)]
+#[unsafe(link_section = ".noncacheable")]
+static MON_USB_TRACE_RX_SEQ: AtomicU32 = AtomicU32::new(0);
+#[unsafe(no_mangle)]
+#[unsafe(link_section = ".noncacheable")]
+static MON_USB_TRACE_RX: [AtomicU32; 16] = [const { AtomicU32::new(0) }; 16];
+#[unsafe(no_mangle)]
+#[unsafe(link_section = ".noncacheable")]
+static MON_USB_TRACE_TX_LEN: AtomicU32 = AtomicU32::new(0);
+#[unsafe(no_mangle)]
+#[unsafe(link_section = ".noncacheable")]
+static MON_USB_TRACE_TX_SEQ: AtomicU32 = AtomicU32::new(0);
+#[unsafe(no_mangle)]
+#[unsafe(link_section = ".noncacheable")]
+static MON_USB_TRACE_TX_DONE_SEQ: AtomicU32 = AtomicU32::new(0);
+#[unsafe(no_mangle)]
+#[unsafe(link_section = ".noncacheable")]
+static MON_USB_TRACE_TX: [AtomicU32; 16] = [const { AtomicU32::new(0) }; 16];
+#[unsafe(no_mangle)]
+#[unsafe(link_section = ".noncacheable")]
+static MON_USB_TRACE_ACC_LEN: AtomicU32 = AtomicU32::new(0);
+#[unsafe(no_mangle)]
+#[unsafe(link_section = ".noncacheable")]
+static MON_USB_TRACE_ACC_SEQ: AtomicU32 = AtomicU32::new(0);
+#[unsafe(no_mangle)]
+#[unsafe(link_section = ".noncacheable")]
+static MON_USB_TRACE_ACC: [AtomicU32; 16] = [const { AtomicU32::new(0) }; 16];
+#[unsafe(no_mangle)]
+#[unsafe(link_section = ".noncacheable")]
+static MON_USB_TRACE_PARSE_INDEX: AtomicU32 = AtomicU32::new(0);
+#[unsafe(no_mangle)]
+#[unsafe(link_section = ".noncacheable")]
+static MON_USB_TRACE_PARSE_CMD: AtomicU32 = AtomicU32::new(0);
+#[unsafe(no_mangle)]
+#[unsafe(link_section = ".noncacheable")]
+static MON_USB_TRACE_PARSE_PAYLOAD_LEN: AtomicU32 = AtomicU32::new(0);
+#[unsafe(no_mangle)]
+#[unsafe(link_section = ".noncacheable")]
+static MON_USB_TRACE_HANDLE_ENTRY_CMD: AtomicU32 = AtomicU32::new(0);
+#[unsafe(no_mangle)]
+#[unsafe(link_section = ".noncacheable")]
+static MON_USB_TRACE_HANDLE_ENTRY_PAYLOAD_LEN: AtomicU32 = AtomicU32::new(0);
+#[unsafe(no_mangle)]
+#[unsafe(link_section = ".noncacheable")]
+static MON_USB_TRACE_HANDLE_AFTER_FILL_CMD: AtomicU32 = AtomicU32::new(0);
+#[unsafe(no_mangle)]
+#[unsafe(link_section = ".noncacheable")]
+static MON_USB_TRACE_HANDLE_AFTER_FILL_PAYLOAD_LEN: AtomicU32 = AtomicU32::new(0);
+#[unsafe(no_mangle)]
+#[unsafe(link_section = ".noncacheable")]
+static MON_USB_TRACE_CONSUME_COUNT: AtomicU32 = AtomicU32::new(0);
+#[unsafe(no_mangle)]
+#[unsafe(link_section = ".noncacheable")]
+static MON_USB_TRACE_CONSUME_RX_LEN: AtomicU32 = AtomicU32::new(0);
 bind_interrupts!(struct Irqs {
     USB0 => hal::usb::InterruptHandler<peripherals::USB0>;
 });
+
+#[repr(align(4))]
+struct AlignedBuf<const N: usize>([u8; N]);
 
 #[unsafe(link_section = ".noncacheable")]
 static EP_STATE: EndpointState = EndpointState::new();
 
 #[unsafe(link_section = ".noncacheable")]
-static CONFIG_DESC: StaticCell<[u8; 256]> = StaticCell::new();
+static CONFIG_DESC: StaticCell<AlignedBuf<512>> = StaticCell::new();
 #[unsafe(link_section = ".noncacheable")]
-static BOS_DESC: StaticCell<[u8; 256]> = StaticCell::new();
+static BOS_DESC: StaticCell<AlignedBuf<512>> = StaticCell::new();
 #[unsafe(link_section = ".noncacheable")]
-static CONTROL_BUF: StaticCell<[u8; 64]> = StaticCell::new();
+static MSOS_DESC: StaticCell<AlignedBuf<256>> = StaticCell::new();
 #[unsafe(link_section = ".noncacheable")]
-static CDC_STATE: StaticCell<State> = StaticCell::new();
+static CONTROL_BUF: StaticCell<AlignedBuf<64>> = StaticCell::new();
+static MONITOR_BULK_STATE: StaticCell<MonitorUsbLite> = StaticCell::new();
 #[unsafe(link_section = ".noncacheable")]
-static MONITOR_STATE: StaticCell<MonitorUsbLite> = StaticCell::new();
+static BULK_READ_BUF: StaticCell<AlignedBuf<BULK_MAX_PACKET_SIZE>> = StaticCell::new();
 #[unsafe(link_section = ".noncacheable")]
-static USB_READ_BUF: StaticCell<[u8; USB_MAX_PACKET_SIZE]> = StaticCell::new();
+static BULK_WRITE_BUF: StaticCell<AlignedBuf<BULK_MAX_PACKET_SIZE>> = StaticCell::new();
 
 struct MonitorPacket {
     index: u16,
     cmd: u16,
     payload_len: usize,
+}
+
+struct MonitorBulkClass<'d, D: Driver<'d>> {
+    read_ep: D::EndpointOut,
+    write_ep: D::EndpointIn,
+}
+
+impl<'d, D: Driver<'d>> MonitorBulkClass<'d, D> {
+    fn new(builder: &mut Builder<'d, D>, max_packet_size: u16) -> Self {
+        write_mon_u32(addr_of_mut!(MON_LAST_ERROR), 0x252);
+        let mut function = builder.function(0xff, 0x00, 0x00);
+        write_mon_u32(addr_of_mut!(MON_LAST_ERROR), 0x253);
+        function.msos_feature(CompatibleIdFeatureDescriptor::new("WINUSB", ""));
+        write_mon_u32(addr_of_mut!(MON_LAST_ERROR), 0x254);
+
+        let mut interface = function.interface();
+        write_mon_u32(addr_of_mut!(MON_LAST_ERROR), 0x255);
+        let mut alt = interface.alt_setting(0xff, 0x00, 0x00, None);
+        write_mon_u32(addr_of_mut!(MON_LAST_ERROR), 0x256);
+        let read_ep = alt.endpoint_bulk_out(None, max_packet_size);
+        write_mon_u32(addr_of_mut!(MON_LAST_ERROR), 0x257);
+        let write_ep = alt.endpoint_bulk_in(None, max_packet_size);
+        write_mon_u32(addr_of_mut!(MON_LAST_ERROR), 0x258);
+
+        Self { read_ep, write_ep }
+    }
 }
 
 #[repr(C)]
@@ -299,12 +390,18 @@ impl MonitorUsbLite {
         }
     }
 
+    #[inline(never)]
     fn process_next(&mut self, micros: u32) -> Option<usize> {
         let frame_len = self.next_frame_len()?;
         let frame = &self.rx[..frame_len];
         let parsed = parse_packet(frame);
         let tx_len = match parsed {
-            Ok(packet) => self.handle_packet(packet, micros),
+            Ok(packet) => {
+                MON_USB_TRACE_PARSE_INDEX.store(packet.index as u32, Ordering::Release);
+                MON_USB_TRACE_PARSE_CMD.store(packet.cmd as u32, Ordering::Release);
+                MON_USB_TRACE_PARSE_PAYLOAD_LEN.store(packet.payload_len as u32, Ordering::Release);
+                self.handle_packet(packet, micros)
+            }
             Err(result) => {
                 self.tx.fill(0);
                 let index = read_u16(frame, INDEX_OFFSET).unwrap_or(0);
@@ -352,17 +449,41 @@ impl MonitorUsbLite {
     }
 
     fn consume(&mut self, count: usize) {
-        self.rx.copy_within(count..self.rx_len, 0);
+        MON_USB_TRACE_CONSUME_COUNT.store(count as u32, Ordering::Release);
+        MON_USB_TRACE_CONSUME_RX_LEN.store(self.rx_len as u32, Ordering::Release);
+        if count > self.rx_len {
+            write_mon_u32(addr_of_mut!(MON_LAST_ERROR), RESULT_HEAD_ERR as u32);
+            self.rx_len = 0;
+            return;
+        }
+
+        let remaining = self.rx_len - count;
+        for i in 0..remaining {
+            unsafe {
+                let value = core::ptr::read_volatile(self.rx.as_ptr().add(count + i));
+                core::ptr::write_volatile(self.rx.as_mut_ptr().add(i), value);
+            }
+        }
         self.rx_len -= count;
     }
 
+    #[inline(never)]
     fn handle_packet(&mut self, packet: MonitorPacket, micros: u32) -> usize {
-        self.tx.fill(0);
+        MON_USB_TRACE_HANDLE_ENTRY_CMD.store(packet.cmd as u32, Ordering::Release);
+        MON_USB_TRACE_HANDLE_ENTRY_PAYLOAD_LEN.store(packet.payload_len as u32, Ordering::Release);
+        write_mon_u32(addr_of_mut!(MON_LAST_ERROR), 0x300 | packet.cmd as u32);
+        fill_bytes(&mut self.tx, 0);
+        MON_USB_TRACE_HANDLE_AFTER_FILL_CMD.store(packet.cmd as u32, Ordering::Release);
+        MON_USB_TRACE_HANDLE_AFTER_FILL_PAYLOAD_LEN.store(packet.payload_len as u32, Ordering::Release);
 
         write_mon_u32(addr_of_mut!(MON_RX_PACKETS), read_mon_u32(addr_of!(MON_RX_PACKETS)) + 1);
 
         let led_state = read_mon_u32(addr_of!(MON_LED_STATE)) ^ 1;
         write_mon_u32(addr_of_mut!(MON_LED_STATE), led_state);
+
+        if packet.payload_len > MAX_PACKET_SIZE - PROFILE_MIN_SIZE {
+            return self.write_response(packet.index, packet.cmd, RESULT_PAYLOAD_ERR, micros, 0);
+        }
 
         match packet.cmd {
             CMD_CONNECT => self.write_response(packet.index, CMD_CONNECT, RESULT_SUCCESS, micros, 0),
@@ -398,30 +519,39 @@ impl MonitorUsbLite {
     }
 
     fn write_monitor_info(&mut self) -> usize {
-        let payload = &mut self.tx[PAYLOAD_OFFSET..PAYLOAD_OFFSET + MONITOR_INFO_SIZE];
-        payload.fill(0);
-        payload[0..2].copy_from_slice(&0x1209u16.to_le_bytes());
-        payload[2..4].copy_from_slice(&0x5e31u16.to_le_bytes());
-        payload[4..12].copy_from_slice(&202607050002u64.to_le_bytes());
-        payload[12..16].copy_from_slice(&(MAX_PACKET_SIZE as u32).to_le_bytes());
-        payload[16..20].copy_from_slice(&0u32.to_le_bytes());
-        payload[20..22].copy_from_slice(&MAX_VALUE_COUNT.to_le_bytes());
-        payload[22..24].copy_from_slice(&0u16.to_le_bytes());
+        write_mon_u32(addr_of_mut!(MON_LAST_ERROR), 0x310);
+        write_u16(&mut self.tx, PAYLOAD_OFFSET, 0x1209);
+        write_u16(&mut self.tx, PAYLOAD_OFFSET + 2, 0x5e31);
+        write_u64(&mut self.tx, PAYLOAD_OFFSET + 4, 202607050002);
+        write_u32(&mut self.tx, PAYLOAD_OFFSET + 12, MAX_PACKET_SIZE as u32);
+        write_u32(&mut self.tx, PAYLOAD_OFFSET + 16, 0);
+        write_u16(&mut self.tx, PAYLOAD_OFFSET + 20, MAX_VALUE_COUNT);
+        write_u16(&mut self.tx, PAYLOAD_OFFSET + 22, 0);
         MONITOR_INFO_SIZE
     }
 
     fn process_getvalue(&mut self, payload_len: usize) -> u16 {
+        if payload_len > MAX_PACKET_SIZE - PROFILE_MIN_SIZE {
+            return RESULT_PAYLOAD_ERR;
+        }
         let payload = &self.rx[PAYLOAD_OFFSET..PAYLOAD_OFFSET + payload_len];
         if payload.len() < 20 {
             return RESULT_PAYLOAD_ERR;
         }
-        self.tx[PAYLOAD_OFFSET..PAYLOAD_OFFSET + payload_len].copy_from_slice(payload);
+        copy_bytes(&mut self.tx[PAYLOAD_OFFSET..PAYLOAD_OFFSET + payload_len], payload);
 
         let pkt_count = match read_u16(payload, 0) {
             Some(v) => v as usize,
             None => return RESULT_PAYLOAD_ERR,
         };
         if pkt_count > MAX_VALUE_COUNT as usize {
+            return RESULT_PAYLOAD_ERR;
+        }
+        if 12usize
+            .checked_add(pkt_count.saturating_mul(12))
+            .filter(|expected| *expected == payload_len)
+            .is_none()
+        {
             return RESULT_PAYLOAD_ERR;
         }
 
@@ -444,7 +574,7 @@ impl MonitorUsbLite {
                 Some(value) => value,
                 None => return RESULT_GET_ERR,
             };
-            self.tx[PAYLOAD_OFFSET + offset + 8..PAYLOAD_OFFSET + offset + 12].copy_from_slice(&value.to_le_bytes());
+            write_u32(&mut self.tx, PAYLOAD_OFFSET + offset + 8, value);
             offset += 12;
         }
 
@@ -453,30 +583,41 @@ impl MonitorUsbLite {
 }
 
 fn init_usb0_pins() {
-    use hal::pac::{IOC, iomux};
+    const IOC_BASE: usize = 0xf404_0000;
+    const FUNC_CTL_STRIDE: usize = 8;
+    const USB0_ALT: u32 = 0x18;
 
-    IOC.pad(179)
-        .func_ctl()
-        .write(|w| w.set_alt_select(iomux::IOC_PF19_FUNC_CTL_USB0_PWR));
-    IOC.pad(182)
-        .func_ctl()
-        .write(|w| w.set_alt_select(iomux::IOC_PF22_FUNC_CTL_USB0_ID));
-    IOC.pad(183)
-        .func_ctl()
-        .write(|w| w.set_alt_select(iomux::IOC_PF23_FUNC_CTL_USB0_OC));
+    fn set_pad_alt(pad: usize, alt: u32) {
+        let func_ctl = (IOC_BASE + pad * FUNC_CTL_STRIDE) as *mut u32;
+        unsafe {
+            let value = core::ptr::read_volatile(func_ctl);
+            core::ptr::write_volatile(func_ctl, (value & !0x1f) | (alt & 0x1f));
+        }
+    }
+
+    write_mon_u32(addr_of_mut!(MON_LAST_ERROR), 0x211);
+    set_pad_alt(179, USB0_ALT);
+    write_mon_u32(addr_of_mut!(MON_LAST_ERROR), 0x212);
+    set_pad_alt(182, USB0_ALT);
+    write_mon_u32(addr_of_mut!(MON_LAST_ERROR), 0x213);
+    set_pad_alt(183, USB0_ALT);
+    write_mon_u32(addr_of_mut!(MON_LAST_ERROR), 0x214);
 }
 
 #[embassy_executor::main(entry = "hpm_hal::entry")]
 async fn main(_spawner: Spawner) -> ! {
     write_mon_u32(addr_of_mut!(MON_LAST_ERROR), 0x200);
+    defmt::info!("hpm usb bulk monitor start");
 
     let p = hal::init(Default::default());
     write_mon_u32(addr_of_mut!(MON_LAST_ERROR), 0x210);
+    defmt::info!("hal init complete");
 
     init_usb0_pins();
 
     let mut usb_config = hal::usb::Config::default();
     usb_config.use_internal_vbus = true;
+    usb_config.force_full_speed = true;
     let usb_driver = hal::usb::UsbDriver::new(p.USB0, Irqs, usb_config, &EP_STATE);
     write_mon_u32(addr_of_mut!(MON_LAST_ERROR), 0x220);
 
@@ -484,51 +625,104 @@ async fn main(_spawner: Spawner) -> ! {
     config.manufacturer = Some("hpm-hal");
     config.product = Some("HPM5E Monitor");
     config.serial_number = Some("HPM5E31");
-    config.device_class = 0xEF;
-    config.device_sub_class = 0x02;
-    config.device_protocol = 0x01;
-    config.composite_with_iads = true;
+    config.device_class = 0x00;
+    config.device_sub_class = 0x00;
+    config.device_protocol = 0x00;
+    config.composite_with_iads = false;
     write_mon_u32(addr_of_mut!(MON_LAST_ERROR), 0x230);
 
     write_mon_u32(addr_of_mut!(MON_LAST_ERROR), 0x240);
     let mut builder = Builder::new(
         usb_driver,
         config,
-        CONFIG_DESC.init([0; 256]),
-        BOS_DESC.init([0; 256]),
-        &mut [],
-        CONTROL_BUF.init([0; 64]),
+        &mut CONFIG_DESC.init(AlignedBuf([0; 512])).0,
+        &mut BOS_DESC.init(AlignedBuf([0; 512])).0,
+        &mut MSOS_DESC.init(AlignedBuf([0; 256])).0,
+        &mut CONTROL_BUF.init(AlignedBuf([0; 64])).0,
     );
     write_mon_u32(addr_of_mut!(MON_LAST_ERROR), 0x250);
-    let class = CdcAcmClass::new(&mut builder, CDC_STATE.init(State::new()), USB_MAX_PACKET_SIZE as u16);
+    builder.msos_descriptor(windows_version::WIN10, 0x21);
+    write_mon_u32(addr_of_mut!(MON_LAST_ERROR), 0x251);
+    let bulk_class = MonitorBulkClass::new(&mut builder, BULK_MAX_PACKET_SIZE as u16);
     write_mon_u32(addr_of_mut!(MON_LAST_ERROR), 0x260);
     let mut usb = builder.build();
     write_mon_u32(addr_of_mut!(MON_LAST_ERROR), 0x270);
 
     let usb_fut = async {
         write_mon_u32(addr_of_mut!(MON_LAST_ERROR), 0x280);
+        defmt::info!("usb device run");
         usb.run().await;
     };
-    let monitor_fut = async {
+    let bulk_monitor_fut = async {
         write_mon_u32(addr_of_mut!(MON_LAST_ERROR), 0x290);
-        let (mut sender, mut reader) = class.split();
-        let monitor = MONITOR_STATE.init(MonitorUsbLite::new());
-        let usb_read_buf = USB_READ_BUF.init([0; USB_MAX_PACKET_SIZE]);
+        let mut bulk_class = bulk_class;
+        let monitor = MONITOR_BULK_STATE.init(MonitorUsbLite::new());
+        let bulk_read_buf = &mut BULK_READ_BUF.init(AlignedBuf([0; BULK_MAX_PACKET_SIZE])).0;
+        let bulk_write_buf = &mut BULK_WRITE_BUF.init(AlignedBuf([0; BULK_MAX_PACKET_SIZE])).0;
         loop {
             write_mon_u32(addr_of_mut!(MON_LAST_ERROR), 0x2a0);
-            sender.wait_connection().await;
-            write_mon_u32(addr_of_mut!(MON_LAST_ERROR), 0x2b0);
-            reader.wait_connection().await;
-            write_mon_u32(addr_of_mut!(MON_LAST_ERROR), 0x2c0);
-            let _ = run_monitor(&mut reader, &mut sender, monitor, usb_read_buf).await;
+            let _ = run_bulk_monitor(&mut bulk_class, monitor, bulk_read_buf, bulk_write_buf).await;
             write_mon_u32(addr_of_mut!(MON_LAST_ERROR), 0x2ff);
         }
     };
-
-    join(usb_fut, monitor_fut).await;
+    join(usb_fut, bulk_monitor_fut).await;
 
     loop {
         embassy_time::Timer::after_millis(500).await;
+    }
+}
+
+async fn run_bulk_monitor<'d, D: Driver<'d>>(
+    class: &mut MonitorBulkClass<'d, D>,
+    monitor: &mut MonitorUsbLite,
+    read_buf: &mut [u8; BULK_MAX_PACKET_SIZE],
+    write_buf: &mut [u8; BULK_MAX_PACKET_SIZE],
+) -> Result<(), Disconnected> {
+    monitor.rx_len = 0;
+    class.read_ep.wait_enabled().await;
+    class.write_ep.wait_enabled().await;
+
+    loop {
+        // HPM5E can expose a retired qTD before the short-packet remaining
+        // count has crossed into memory. Clear the packet buffer before each
+        // receive so a transient full-size length contains zero padding rather
+        // than bytes from an earlier monitor request.
+        fill_bytes(read_buf, 0);
+        let n = class.read_ep.read(&mut read_buf[..]).await?;
+        trace_usb_packet(
+            &MON_USB_TRACE_RX,
+            &MON_USB_TRACE_RX_LEN,
+            &MON_USB_TRACE_RX_SEQ,
+            &read_buf[..n],
+        );
+        write_mon_u32(
+            addr_of_mut!(MON_LOOP_COUNT),
+            read_mon_u32(addr_of!(MON_LOOP_COUNT)).wrapping_add(1),
+        );
+
+        monitor.push_rx(&read_buf[..n]);
+        trace_usb_packet(
+            &MON_USB_TRACE_ACC,
+            &MON_USB_TRACE_ACC_LEN,
+            &MON_USB_TRACE_ACC_SEQ,
+            &monitor.rx[..monitor.rx_len],
+        );
+        let micros = embassy_time::Instant::now().as_micros() as u32;
+        while let Some(tx_len) = monitor.process_next(micros) {
+            for chunk in monitor.tx[..tx_len].chunks(BULK_MAX_PACKET_SIZE) {
+                write_mon_u32(addr_of_mut!(MON_LAST_ERROR), 0x340);
+                copy_bytes(&mut write_buf[..chunk.len()], chunk);
+                trace_usb_packet(
+                    &MON_USB_TRACE_TX,
+                    &MON_USB_TRACE_TX_LEN,
+                    &MON_USB_TRACE_TX_SEQ,
+                    &write_buf[..chunk.len()],
+                );
+                class.write_ep.write(&write_buf[..chunk.len()]).await?;
+                MON_USB_TRACE_TX_DONE_SEQ.fetch_add(1, Ordering::Release);
+                write_mon_u32(addr_of_mut!(MON_LAST_ERROR), 0x350);
+            }
+        }
     }
 }
 
@@ -539,31 +733,6 @@ impl From<EndpointError> for Disconnected {
         match val {
             EndpointError::BufferOverflow => panic!("USB endpoint buffer overflow"),
             EndpointError::Disabled => Disconnected {},
-        }
-    }
-}
-
-async fn run_monitor<'d, T: Instance + 'd>(
-    reader: &mut Receiver<'d, UsbDriver<'d, T>>,
-    sender: &mut Sender<'d, UsbDriver<'d, T>>,
-    monitor: &mut MonitorUsbLite,
-    buf: &mut [u8; USB_MAX_PACKET_SIZE],
-) -> Result<(), Disconnected> {
-    monitor.rx_len = 0;
-
-    loop {
-        let n = reader.read_packet(&mut buf[..]).await?;
-        write_mon_u32(
-            addr_of_mut!(MON_LOOP_COUNT),
-            read_mon_u32(addr_of!(MON_LOOP_COUNT)).wrapping_add(1),
-        );
-
-        monitor.push_rx(&buf[..n]);
-        let micros = embassy_time::Instant::now().as_micros() as u32;
-        while let Some(tx_len) = monitor.process_next(micros) {
-            for chunk in monitor.tx[..tx_len].chunks(USB_MAX_PACKET_SIZE) {
-                sender.write_packet(chunk).await?;
-            }
         }
     }
 }
@@ -608,6 +777,8 @@ fn read_allowed_u32(addr: u32) -> Option<u32> {
         v if v == addr_of!(MON_LED_STATE) as u32 => Some(read_mon_u32(addr_of!(MON_LED_STATE))),
         v if v == addr_of!(MON_LAST_ERROR) as u32 => Some(read_mon_u32(addr_of!(MON_LAST_ERROR))),
         v if v == addr_of!(MON_RX_PACKETS) as u32 => Some(read_mon_u32(addr_of!(MON_RX_PACKETS))),
+        v if v == atomic_addr(&MON_PANIC_LINE) => Some(MON_PANIC_LINE.load(Ordering::Relaxed)),
+        v if v == atomic_addr(&MON_PANIC_COLUMN) => Some(MON_PANIC_COLUMN.load(Ordering::Relaxed)),
 
         v if v == atomic_addr(&EXCEPTION_MCAUSE) => Some(EXCEPTION_MCAUSE.load(Ordering::Relaxed)),
         v if v == atomic_addr(&EXCEPTION_MEPC) => Some(EXCEPTION_MEPC.load(Ordering::Relaxed)),
@@ -645,19 +816,23 @@ fn read_allowed_u32(addr: u32) -> Option<u32> {
         v if v == atomic_addr(&MON_CSR_PMAADDR0) => Some(read_csr("pmaaddr0")),
         v if v == atomic_addr(&MON_CSR_PMAADDR1) => Some(read_csr("pmaaddr1")),
 
-        v if v == atomic_addr(&MON_USB_STAGE) => Some(hal::usb::USB_DEBUG_STAGE.load(Ordering::Relaxed)),
-        v if v == atomic_addr(&MON_USB_USBSTS) => Some(hal::usb::USB_DEBUG_USBSTS.load(Ordering::Relaxed)),
-        v if v == atomic_addr(&MON_USB_USBINTR) => Some(hal::usb::USB_DEBUG_USBINTR.load(Ordering::Relaxed)),
-        v if v == atomic_addr(&MON_USB_PORTSC1) => Some(hal::usb::USB_DEBUG_PORTSC1.load(Ordering::Relaxed)),
-        v if v == atomic_addr(&MON_USB_OTGSC) => Some(hal::usb::USB_DEBUG_OTGSC.load(Ordering::Relaxed)),
-        v if v == atomic_addr(&MON_USB_PHY_CTRL0) => Some(hal::usb::USB_DEBUG_PHY_CTRL0.load(Ordering::Relaxed)),
-        v if v == atomic_addr(&MON_USB_USBCMD) => Some(hal::usb::USB_DEBUG_USBCMD.load(Ordering::Relaxed)),
-        v if v == atomic_addr(&MON_USB_USBMODE) => Some(hal::usb::USB_DEBUG_USBMODE.load(Ordering::Relaxed)),
-        v if v == atomic_addr(&MON_USB_IRQ_COUNT) => Some(hal::usb::USB_DEBUG_IRQ_COUNT.load(Ordering::Relaxed)),
-        v if v == atomic_addr(&MON_USB_QTD_ADDR) => Some(hal::usb::USB_DEBUG_QTD_ADDR.load(Ordering::Relaxed)),
-        v if v == atomic_addr(&MON_USB_QTD_DATA_PTR) => Some(hal::usb::USB_DEBUG_QTD_DATA_PTR.load(Ordering::Relaxed)),
-        v if v == atomic_addr(&MON_USB_QTD_LEN) => Some(hal::usb::USB_DEBUG_QTD_LEN.load(Ordering::Relaxed)),
-        v if v == atomic_addr(&MON_USB_QTD_SYS_ADDR) => Some(hal::usb::USB_DEBUG_QTD_SYS_ADDR.load(Ordering::Relaxed)),
+        v if v == atomic_addr(&MON_USB_STAGE) => Some(hal::usb::diagnostics::STAGE.load(Ordering::Relaxed)),
+        v if v == atomic_addr(&MON_USB_USBSTS) => Some(hal::usb::diagnostics::USBSTS.load(Ordering::Relaxed)),
+        v if v == atomic_addr(&MON_USB_USBINTR) => Some(hal::usb::diagnostics::USBINTR.load(Ordering::Relaxed)),
+        v if v == atomic_addr(&MON_USB_PORTSC1) => Some(hal::usb::diagnostics::PORTSC1.load(Ordering::Relaxed)),
+        v if v == atomic_addr(&MON_USB_OTGSC) => Some(hal::usb::diagnostics::OTGSC.load(Ordering::Relaxed)),
+        v if v == atomic_addr(&MON_USB_PHY_CTRL0) => Some(hal::usb::diagnostics::PHY_CTRL0.load(Ordering::Relaxed)),
+        v if v == atomic_addr(&MON_USB_USBCMD) => Some(hal::usb::diagnostics::USBCMD.load(Ordering::Relaxed)),
+        v if v == atomic_addr(&MON_USB_USBMODE) => Some(hal::usb::diagnostics::USBMODE.load(Ordering::Relaxed)),
+        v if v == atomic_addr(&MON_USB_IRQ_COUNT) => Some(hal::usb::diagnostics::IRQ_COUNT.load(Ordering::Relaxed)),
+        v if v == atomic_addr(&MON_USB_QTD_ADDR) => Some(hal::usb::diagnostics::QTD_ADDR.load(Ordering::Relaxed)),
+        v if v == atomic_addr(&MON_USB_QTD_DATA_PTR) => {
+            Some(hal::usb::diagnostics::QTD_DATA_PTR.load(Ordering::Relaxed))
+        }
+        v if v == atomic_addr(&MON_USB_QTD_LEN) => Some(hal::usb::diagnostics::QTD_LEN.load(Ordering::Relaxed)),
+        v if v == atomic_addr(&MON_USB_QTD_SYS_ADDR) => {
+            Some(hal::usb::diagnostics::QTD_SYS_ADDR.load(Ordering::Relaxed))
+        }
         _ => None,
     }
 }
@@ -685,11 +860,55 @@ fn read_u32(buf: &[u8], offset: usize) -> Option<u32> {
 }
 
 fn write_u16(buf: &mut [u8], offset: usize, value: u16) {
-    buf[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+    let bytes = value.to_le_bytes();
+    buf[offset] = bytes[0];
+    buf[offset + 1] = bytes[1];
 }
 
 fn write_u32(buf: &mut [u8], offset: usize, value: u32) {
-    buf[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    let bytes = value.to_le_bytes();
+    buf[offset] = bytes[0];
+    buf[offset + 1] = bytes[1];
+    buf[offset + 2] = bytes[2];
+    buf[offset + 3] = bytes[3];
+}
+
+fn write_u64(buf: &mut [u8], offset: usize, value: u64) {
+    let bytes = value.to_le_bytes();
+    for (i, byte) in bytes.into_iter().enumerate() {
+        buf[offset + i] = byte;
+    }
+}
+
+fn fill_bytes(buf: &mut [u8], value: u8) {
+    for i in 0..buf.len() {
+        unsafe { core::ptr::write_volatile(buf.as_mut_ptr().add(i), value) };
+    }
+}
+
+fn copy_bytes(dst: &mut [u8], src: &[u8]) {
+    debug_assert_eq!(dst.len(), src.len());
+    for i in 0..dst.len() {
+        unsafe {
+            let value = core::ptr::read_volatile(src.as_ptr().add(i));
+            core::ptr::write_volatile(dst.as_mut_ptr().add(i), value);
+        }
+    }
+}
+
+fn trace_usb_packet(words: &[AtomicU32; 16], len: &AtomicU32, sequence: &AtomicU32, data: &[u8]) {
+    for (word_index, word) in words.iter().enumerate() {
+        let offset = word_index * 4;
+        let mut bytes = [0u8; 4];
+        for (byte_index, byte) in bytes.iter_mut().enumerate() {
+            if let Some(value) = data.get(offset + byte_index) {
+                *byte = *value;
+            }
+        }
+        word.store(u32::from_le_bytes(bytes), Ordering::Relaxed);
+    }
+    len.store(data.len() as u32, Ordering::Release);
+    sequence.fetch_add(1, Ordering::Release);
 }
 
 fn crc32(data: &[u8]) -> u32 {
@@ -737,39 +956,18 @@ exception_handler!(
 
 fn record_exception(trap_frame: *const TrapFrame) -> ! {
     let mcause = read_csr("mcause");
-    let mepc = read_csr("mepc");
-    let mtval = read_csr("mtval");
-    let mstatus = read_csr("mstatus");
-    let mie = read_csr("mie");
-    let mip = read_csr("mip");
-    let mdcause = read_csr("mdcause");
-    let mxstatus = read_csr("mxstatus");
-    let mcache_ctl = read_csr("mcache_ctl");
-    let mmisc_ctl = read_csr("mmisc_ctl");
-    let pmpcfg0 = read_csr("pmpcfg0");
-    let pmpaddr0 = read_csr("pmpaddr0");
-    let pmpaddr1 = read_csr("pmpaddr1");
-    let pmacfg0 = read_csr("pmacfg0");
-    let pmaaddr0 = read_csr("pmaaddr0");
-    let pmaaddr1 = read_csr("pmaaddr1");
-
     EXCEPTION_MCAUSE.store(mcause, Ordering::Relaxed);
+    let mepc = read_csr("mepc");
     EXCEPTION_MEPC.store(mepc, Ordering::Relaxed);
+    let mtval = read_csr("mtval");
     EXCEPTION_MTVAL.store(mtval, Ordering::Relaxed);
     EXCEPTION_TRAP_FRAME.store(trap_frame as u32, Ordering::Relaxed);
+    let mstatus = read_csr("mstatus");
     EXCEPTION_MSTATUS.store(mstatus, Ordering::Relaxed);
+    let mie = read_csr("mie");
     EXCEPTION_MIE.store(mie, Ordering::Relaxed);
+    let mip = read_csr("mip");
     EXCEPTION_MIP.store(mip, Ordering::Relaxed);
-    EXCEPTION_MDCAUSE.store(mdcause, Ordering::Relaxed);
-    EXCEPTION_MXSTATUS.store(mxstatus, Ordering::Relaxed);
-    EXCEPTION_MCACHE_CTL.store(mcache_ctl, Ordering::Relaxed);
-    EXCEPTION_MMISC_CTL.store(mmisc_ctl, Ordering::Relaxed);
-    EXCEPTION_PMPCFG0.store(pmpcfg0, Ordering::Relaxed);
-    EXCEPTION_PMPADDR0.store(pmpaddr0, Ordering::Relaxed);
-    EXCEPTION_PMPADDR1.store(pmpaddr1, Ordering::Relaxed);
-    EXCEPTION_PMACFG0.store(pmacfg0, Ordering::Relaxed);
-    EXCEPTION_PMAADDR0.store(pmaaddr0, Ordering::Relaxed);
-    EXCEPTION_PMAADDR1.store(pmaaddr1, Ordering::Relaxed);
 
     if let Some(trap_frame) = unsafe { trap_frame.as_ref() } {
         EXCEPTION_RA.store(trap_frame.ra as u32, Ordering::Relaxed);
@@ -800,6 +998,18 @@ fn record_exception(trap_frame: *const TrapFrame) -> ! {
         EXCEPTION_S11.store(trap_frame.s11 as u32, Ordering::Relaxed);
     }
 
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
+#[panic_handler]
+fn panic(info: &PanicInfo) -> ! {
+    write_mon_u32(addr_of_mut!(MON_LAST_ERROR), 0xffff_0001);
+    if let Some(location) = info.location() {
+        MON_PANIC_LINE.store(location.line(), Ordering::Relaxed);
+        MON_PANIC_COLUMN.store(location.column(), Ordering::Relaxed);
+    }
     loop {
         core::hint::spin_loop();
     }

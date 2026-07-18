@@ -7,27 +7,55 @@ import argparse
 import json
 import mimetypes
 import sys
+import time
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 ROOT = Path(__file__).resolve().parents[2]
 WEB_ROOT = Path(__file__).resolve().parent / "static"
-DEFAULT_ELF = ROOT / "target/riscv32imafc-unknown-none-elf/debug/monitor_blinky"
+DEFAULT_ELF = ROOT / "target/riscv32imac-unknown-none-elf/release/monitor_sensors"
 
 sys.path.insert(0, str(ROOT / "tools"))
 import monitor_smoke as monitor  # noqa: E402
 
 
 DEFAULT_SYMBOLS = [
+    "MON_SENSOR_CYCLE_COUNT",
+    "MON_SENSOR_READY_MASK",
+    "MON_SENSOR_LAST_ERROR",
+    "MON_BH1750_SAMPLE_COUNT",
+    "MON_BH1750_RAW",
+    "MON_BH1750_LUX_X100",
+    "MON_APDS9930_SAMPLE_COUNT",
+    "MON_APDS9930_ID",
+    "MON_APDS9930_STATUS",
+    "MON_APDS9930_CLEAR_RAW",
+    "MON_APDS9930_IR_RAW",
+    "MON_APDS9930_PROXIMITY_RAW",
+    "MON_BME680_SAMPLE_COUNT",
+    "MON_BME680_TEMP_C_X100",
+    "MON_BME680_HUMIDITY_RH_X100",
+    "MON_BME680_PRESSURE_PA",
+    "MON_BME680_GAS_OHM",
+    "MON_BME680_GAS_VALID",
+    "MON_PMS7003_STATUS",
+    "MON_PMS7003_VALID_FRAMES",
+    "MON_PMS7003_INVALID_FRAMES",
+    "MON_PMS7003_UART_ERRORS",
+    "MON_PMS7003_PM1_0_UG_M3",
+    "MON_PMS7003_PM2_5_UG_M3",
+    "MON_PMS7003_PM10_UG_M3",
+    "MON_PMS7003_VERSION",
+    "MON_PMS7003_SENSOR_ERROR",
+    "MON_PMS7003_LAST_UPDATE_MS",
     "MON_LOOP_COUNT",
     "MON_LED_STATE",
     "MON_LAST_ERROR",
     "MON_RX_PACKETS",
-    "MON_BLINK_TICKS",
-    "MON_BLINK_PERIOD_MS",
-    "MON_GPIO_PD06_LEVEL",
-    "MON_GPIO_PD07_LEVEL",
+    "MON_PANIC_LINE",
+    "MON_PANIC_COLUMN",
     "MON_UPTIME_US",
     "MON_CSR_MCAUSE",
     "MON_CSR_MEPC",
@@ -70,46 +98,43 @@ def parse_symbols(raw: str | None) -> list[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
-def read_monitor(port: str, elf: Path, names: list[str], timeout: float) -> dict:
-    import serial
-
+def read_monitor(
+    transport_name: str,
+    port: str | None,
+    elf: Path,
+    names: list[str],
+    timeout: float,
+    vid: int,
+    pid: int,
+) -> dict:
+    started = time.perf_counter()
     symbols = monitor.find_symbols(elf, names)
     names = [name for name in names if name in symbols]
     if not names:
         raise RuntimeError("no requested monitor symbols found in ELF")
 
-    with serial.Serial(port, 115200, timeout=0.02) as ser:
-        ser.reset_input_buffer()
-        monitor.write_serial_frame(ser, monitor.make_packet(1, monitor.CMD_CONNECT))
-        monitor.require_success(monitor.read_packet(ser, timeout), monitor.CMD_CONNECT)
+    if transport_name == "bulk":
+        with monitor.BulkMonitorTransport(vid, pid, timeout) as transport:
+            info, values = monitor.run_monitor_query(transport, names, symbols, timeout)
+        port_value = None
+    else:
+        import serial
 
-        monitor.write_serial_frame(ser, monitor.make_packet(2, monitor.CMD_GETINFO))
-        info_resp = monitor.read_packet(ser, timeout)
-        monitor.require_success(info_resp, monitor.CMD_GETINFO)
-        vid, pid, version, maxsize, memsize, max_count, threshold = monitor.struct.unpack(
-            "<HHQIIHH", bytes(info_resp["payload"])
-        )
-
-        monitor.write_serial_frame(
-            ser,
-            monitor.make_packet(3, monitor.CMD_GETVALUE, monitor.make_getvalue_payload(names, symbols)),
-        )
-        values_resp = monitor.read_packet(ser, timeout)
-        monitor.require_success(values_resp, monitor.CMD_GETVALUE)
-        values = monitor.parse_getvalue_payload(names, bytes(values_resp["payload"]))
+        if port is None:
+            raise RuntimeError("no serial ports found")
+        with serial.Serial(port, 115200, timeout=0.02) as ser:
+            ser.reset_input_buffer()
+            info, values = monitor.run_monitor_query(monitor.SerialMonitorTransport(ser), names, symbols, timeout)
+        port_value = port
 
     return {
-        "info": {
-            "vid": vid,
-            "pid": pid,
-            "version": version,
-            "maxsize": maxsize,
-            "memsize": memsize,
-            "max_count": max_count,
-            "threshold": threshold,
-        },
+        "info": info,
         "values": values,
         "symbols": {name: symbols[name] for name in names},
+        "transport": transport_name,
+        "port": port_value,
+        "sampled_at": datetime.now(timezone.utc).isoformat(),
+        "duration_ms": round((time.perf_counter() - started) * 1000, 1),
     }
 
 
@@ -123,17 +148,20 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/read":
             query = parse_qs(parsed.query)
+            transport = query.get("transport", ["serial"])[0]
             port = query.get("port", [None])[0] or (available_ports()[0] if available_ports() else None)
-            if port is None:
+            if transport == "serial" and port is None:
                 self.write_json({"error": "no serial ports found"}, status=404)
                 return
             elf = Path(query.get("elf", [str(DEFAULT_ELF)])[0]).expanduser()
             names = parse_symbols(query.get("symbols", [None])[0])
             timeout = float(query.get("timeout", ["2.0"])[0])
+            vid = int(query.get("vid", ["0x1209"])[0], 0)
+            pid = int(query.get("pid", ["0x5e31"])[0], 0)
             try:
-                self.write_json(read_monitor(port, elf, names, timeout) | {"port": port, "elf": str(elf)})
+                self.write_json(read_monitor(transport, port, elf, names, timeout, vid, pid) | {"elf": str(elf)})
             except Exception as exc:
-                self.write_json({"error": str(exc), "port": port, "elf": str(elf)}, status=500)
+                self.write_json({"error": str(exc), "transport": transport, "port": port, "elf": str(elf)}, status=500)
             return
         if parsed.path == "/favicon.ico":
             self.send_response(204)

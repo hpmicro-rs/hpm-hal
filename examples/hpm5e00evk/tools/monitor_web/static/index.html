@@ -3,70 +3,193 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>HPM Monitor</title>
+    <meta name="theme-color" content="#08120f" />
+    <title>HPM Sensor Monitor</title>
     <link rel="stylesheet" href="/style.css" />
   </head>
   <body>
-    <header>
-      <h1>HPM Monitor</h1>
-      <div class="status" id="status">idle</div>
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">H5</div>
+        <div>
+          <p class="eyebrow">HPM5E31 · MONITOR V2</p>
+          <h1>环境传感器实时监控</h1>
+        </div>
+      </div>
+      <div class="connection-state" id="connection-state" data-state="idle" data-testid="connection-state">
+        <span class="status-dot" aria-hidden="true"></span>
+        <div>
+          <strong id="status">等待设备</strong>
+          <span id="last-sample">尚未采样</span>
+        </div>
+      </div>
     </header>
 
     <main>
-      <section class="toolbar">
+      <section class="control-bar" aria-label="连接控制">
         <label>
-          Port
-          <select id="port"></select>
+          <span>传输方式</span>
+          <select id="transport" data-testid="transport">
+            <option value="bulk" selected>USB Bulk</option>
+            <option value="serial">CDC Serial</option>
+          </select>
         </label>
-        <label class="elf">
-          ELF
-          <input id="elf" type="text" />
+        <label>
+          <span>串口</span>
+          <select id="port" data-testid="port"></select>
         </label>
-        <button id="refresh">Read</button>
-        <button id="poll">Start Poll</button>
+        <label class="elf-field">
+          <span>固件 ELF</span>
+          <input id="elf" type="text" spellcheck="false" data-testid="elf" />
+        </label>
+        <label>
+          <span>刷新周期</span>
+          <select id="interval" data-testid="interval">
+            <option value="1000" selected>1 秒</option>
+            <option value="2000">2 秒</option>
+            <option value="5000">5 秒</option>
+          </select>
+        </label>
+        <button class="button secondary" id="refresh" data-testid="refresh">单次刷新</button>
+        <button class="button primary" id="poll" data-testid="poll">开始实时监控</button>
       </section>
 
-      <section class="summary">
-        <div>
-          <span>VID/PID</span>
-          <strong id="vidpid">-</strong>
+      <section class="meta-strip" aria-label="设备信息">
+        <div><span>设备</span><strong id="vidpid">—</strong></div>
+        <div><span>协议版本</span><strong id="version">—</strong></div>
+        <div><span>采样耗时</span><strong id="latency">—</strong></div>
+        <div><span>I2C 周期</span><strong id="cycle">—</strong></div>
+        <div><span>USB IRQ</span><strong id="usb-irq">—</strong></div>
+      </section>
+
+      <section class="sensor-grid" aria-label="实时传感器指标">
+        <article class="sensor-card light-card" data-testid="bh1750-card">
+          <div class="card-heading">
+            <div>
+              <p class="sensor-name">BH1750</p>
+              <h2>环境光照</h2>
+            </div>
+            <span class="sensor-badge ok" id="bh-status">在线</span>
+          </div>
+          <div class="hero-value"><strong id="bh-lux">—</strong><span>lux</span></div>
+          <div class="chart-wrap">
+            <canvas id="chart-light" aria-label="光照趋势图"></canvas>
+          </div>
+          <div class="card-footer">
+            <span>原始值 <strong id="bh-raw">—</strong></span>
+            <span>样本 <strong id="bh-count">—</strong></span>
+          </div>
+        </article>
+
+        <article class="sensor-card climate-card" data-testid="bme680-card">
+          <div class="card-heading">
+            <div>
+              <p class="sensor-name">BME680</p>
+              <h2>空气环境</h2>
+            </div>
+            <span class="sensor-badge" id="gas-status">气体预热</span>
+          </div>
+          <div class="hero-value"><strong id="temperature">—</strong><span>°C</span></div>
+          <div class="metric-pair">
+            <div><span>相对湿度</span><strong id="humidity">—</strong><small>%RH</small></div>
+            <div><span>气压</span><strong id="pressure">—</strong><small>hPa</small></div>
+            <div><span>气体电阻</span><strong id="gas">—</strong><small>kΩ</small></div>
+          </div>
+          <div class="chart-wrap dual">
+            <canvas id="chart-climate" aria-label="温湿度趋势图"></canvas>
+          </div>
+        </article>
+
+        <article class="sensor-card particle-card" data-testid="pms7003-card">
+          <div class="card-heading">
+            <div>
+              <p class="sensor-name">PMS7003</p>
+              <h2>颗粒物</h2>
+            </div>
+            <span class="sensor-badge" id="pms-status">等待帧</span>
+          </div>
+          <div class="hero-value"><strong id="pm25">—</strong><span>µg/m³ <small>PM2.5</small></span></div>
+          <div class="particle-bars">
+            <div><span>PM1.0</span><div class="bar"><i id="pm1-bar"></i></div><strong id="pm1">—</strong></div>
+            <div><span>PM2.5</span><div class="bar"><i id="pm25-bar"></i></div><strong id="pm25-small">—</strong></div>
+            <div><span>PM10</span><div class="bar"><i id="pm10-bar"></i></div><strong id="pm10">—</strong></div>
+          </div>
+          <div class="chart-wrap">
+            <canvas id="chart-pm" aria-label="颗粒物趋势图"></canvas>
+          </div>
+          <div class="card-footer">
+            <span>有效帧 <strong id="pms-frames">—</strong></span>
+            <span>版本 <strong id="pms-version">—</strong></span>
+          </div>
+        </article>
+
+        <article class="sensor-card optical-card" data-testid="apds9930-card">
+          <div class="card-heading">
+            <div>
+              <p class="sensor-name">APDS-9930</p>
+              <h2>光学与接近</h2>
+            </div>
+            <span class="sensor-badge" id="apds-status">等待数据</span>
+          </div>
+          <div class="hero-value"><strong id="proximity">—</strong><span>raw <small>接近</small></span></div>
+          <div class="optical-meters">
+            <div>
+              <span>Clear</span><strong id="clear">—</strong>
+              <div class="bar"><i id="clear-bar"></i></div>
+            </div>
+            <div>
+              <span>IR</span><strong id="ir">—</strong>
+              <div class="bar"><i id="ir-bar"></i></div>
+            </div>
+          </div>
+          <div class="chart-wrap">
+            <canvas id="chart-proximity" aria-label="接近值趋势图"></canvas>
+          </div>
+          <div class="card-footer">
+            <span>器件 ID <strong id="apds-id">—</strong></span>
+            <span>样本 <strong id="apds-count">—</strong></span>
+          </div>
+        </article>
+      </section>
+
+      <section class="health-panel" aria-label="系统健康">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">SYSTEM HEALTH</p>
+            <h2>链路与任务状态</h2>
+          </div>
+          <span id="overall-health" class="health-summary">等待首个样本</span>
         </div>
-        <div>
-          <span>Version</span>
-          <strong id="version">-</strong>
-        </div>
-        <div>
-          <span>Packet</span>
-          <strong id="packet">-</strong>
+        <div class="health-grid">
+          <div class="health-item"><span class="health-dot" id="health-i2c-dot"></span><div><strong>I2C 总线</strong><span id="health-i2c">等待</span></div></div>
+          <div class="health-item"><span class="health-dot" id="health-uart-dot"></span><div><strong>UART3 / PMS</strong><span id="health-uart">等待</span></div></div>
+          <div class="health-item"><span class="health-dot" id="health-usb-dot"></span><div><strong>USB Monitor</strong><span id="health-usb">等待</span></div></div>
+          <div class="health-item"><span class="health-dot" id="health-runtime-dot"></span><div><strong>Runtime</strong><span id="health-runtime">等待</span></div></div>
         </div>
       </section>
 
-      <section class="grid">
-        <div class="panel">
-          <h2>Blinky</h2>
-          <table id="blinky"></table>
+      <details class="diagnostics">
+        <summary>原始诊断数据</summary>
+        <div class="diagnostic-grid">
+          <section><h3>传感器</h3><table id="sensor-raw"></table></section>
+          <section><h3>运行状态</h3><table id="runtime-raw"></table></section>
+          <section><h3>USB</h3><table id="usb-raw"></table></section>
+          <section><h3>异常记录</h3><table id="exception-raw"></table></section>
         </div>
-        <div class="panel">
-          <h2>CSR</h2>
-          <table id="csr"></table>
-        </div>
-        <div class="panel wide">
-          <h2>USB</h2>
-          <table id="usb"></table>
-        </div>
-        <div class="panel wide">
-          <h2>Exception</h2>
-          <table id="exception"></table>
-        </div>
-      </section>
+      </details>
 
-      <section class="panel webusb">
-        <h2>WebUSB Direct</h2>
-        <p>当前固件通过 USB CDC 暴露 monitor。WebUSB 直连需要后续增加 vendor interface 和 WebUSB BOS 描述符；前端 transport 会接入同一套 packet 编码。</p>
-        <button id="webusb">Probe WebUSB</button>
-        <pre id="webusb-log"></pre>
-      </section>
+      <details class="diagnostics webusb-panel">
+        <summary>WebUSB 直连诊断</summary>
+        <p>选择 HPM5E31 vendor bulk 接口，检查浏览器对 WebUSB 的可用性。</p>
+        <button class="button secondary" id="webusb">选择 WebUSB 设备</button>
+        <pre id="webusb-log">尚未探测</pre>
+      </details>
     </main>
+
+    <footer>
+      <span>HPM Monitor V2 · 本地 USB bridge</span>
+      <span id="packet">—</span>
+    </footer>
 
     <script type="module" src="/main.js"></script>
   </body>
