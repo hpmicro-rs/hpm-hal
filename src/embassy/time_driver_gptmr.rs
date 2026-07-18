@@ -32,7 +32,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_time_driver::Driver;
 use embassy_time_queue_utils::Queue;
 
-use crate::interrupt::InterruptExt;
+use crate::interrupt::{InterruptExt, Priority};
 use crate::pac;
 use crate::pac::tmr::Tmr;
 
@@ -47,25 +47,6 @@ const COUNTER_RELOAD: u32 = u32::MAX;
 const COUNTER_PERIOD_BITS: u32 = 32;
 const RELOAD_FLAG: u32 = 1 << (CH * 4);
 const CMP1_FLAG: u32 = 1 << (CH * 4 + 3);
-
-#[unsafe(no_mangle)]
-pub static GPTMR_DEBUG_IRQ_COUNT: AtomicU32 = AtomicU32::new(0);
-#[unsafe(no_mangle)]
-pub static GPTMR_DEBUG_RELOAD_COUNT: AtomicU32 = AtomicU32::new(0);
-#[unsafe(no_mangle)]
-pub static GPTMR_DEBUG_CMP1_COUNT: AtomicU32 = AtomicU32::new(0);
-#[unsafe(no_mangle)]
-pub static GPTMR_DEBUG_SET_ALARM_COUNT: AtomicU32 = AtomicU32::new(0);
-#[unsafe(no_mangle)]
-pub static GPTMR_DEBUG_SCHEDULE_COUNT: AtomicU32 = AtomicU32::new(0);
-#[unsafe(no_mangle)]
-pub static GPTMR_DEBUG_NOW_LO: AtomicU32 = AtomicU32::new(0);
-#[unsafe(no_mangle)]
-pub static GPTMR_DEBUG_NOW_HI: AtomicU32 = AtomicU32::new(0);
-#[unsafe(no_mangle)]
-pub static GPTMR_DEBUG_TARGET_LO: AtomicU32 = AtomicU32::new(0);
-#[unsafe(no_mangle)]
-pub static GPTMR_DEBUG_TARGET_HI: AtomicU32 = AtomicU32::new(0);
 
 struct AlarmState {
     timestamp: Cell<u64>,
@@ -155,10 +136,12 @@ impl GptmrDriver {
         // Enable GPTMR interrupt in PLIC
         #[cfg(time_driver_gptmr0)]
         unsafe {
+            crate::interrupt::GPTMR0.set_priority(Priority::P1);
             crate::interrupt::GPTMR0.enable();
         }
         #[cfg(time_driver_gptmr1)]
         unsafe {
+            crate::interrupt::GPTMR1.set_priority(Priority::P1);
             crate::interrupt::GPTMR1.enable();
         }
 
@@ -169,22 +152,18 @@ impl GptmrDriver {
         let r = GPTMR;
 
         critical_section::with(|cs| {
-            GPTMR_DEBUG_IRQ_COUNT.fetch_add(1, Ordering::Relaxed);
-
             let sr = r.sr().read();
             let mut clear = 0;
             let mut wake_queue = false;
 
             if sr.chrldf(CH) {
                 self.epoch.fetch_add(1, Ordering::AcqRel);
-                GPTMR_DEBUG_RELOAD_COUNT.fetch_add(1, Ordering::Relaxed);
                 clear |= RELOAD_FLAG;
                 wake_queue = true;
             }
 
             if sr.chcmp1f(CH) {
                 r.irqen().modify(|w| w.set_chcmp1en(CH, false));
-                GPTMR_DEBUG_CMP1_COUNT.fetch_add(1, Ordering::Relaxed);
                 clear |= CMP1_FLAG;
                 wake_queue = true;
             }
@@ -210,9 +189,6 @@ impl GptmrDriver {
     fn set_alarm(&self, cs: CriticalSection, timestamp: u64) -> bool {
         let r = GPTMR;
         let ticks_per_tick = self.ticks_per_tick.load(Ordering::Relaxed) as u64;
-        GPTMR_DEBUG_SET_ALARM_COUNT.fetch_add(1, Ordering::Relaxed);
-        store_debug_u64(&GPTMR_DEBUG_TARGET_LO, &GPTMR_DEBUG_TARGET_HI, timestamp);
-
         let alarm = self.alarm.borrow(cs);
         alarm.timestamp.set(timestamp);
 
@@ -261,13 +237,10 @@ impl GptmrDriver {
 impl Driver for GptmrDriver {
     fn now(&self) -> u64 {
         let ticks_per_tick = self.ticks_per_tick.load(Ordering::Relaxed) as u64;
-        let now = self.now_hardware_ticks() / ticks_per_tick;
-        store_debug_u64(&GPTMR_DEBUG_NOW_LO, &GPTMR_DEBUG_NOW_HI, now);
-        now
+        self.now_hardware_ticks() / ticks_per_tick
     }
 
     fn schedule_wake(&self, at: u64, waker: &core::task::Waker) {
-        GPTMR_DEBUG_SCHEDULE_COUNT.fetch_add(1, Ordering::Relaxed);
         critical_section::with(|cs| {
             let mut queue = self.queue.borrow(cs).borrow_mut();
 
@@ -308,12 +281,6 @@ fn encode_timer_value(value: u32) -> u32 {
     } else {
         value
     }
-}
-
-#[inline(always)]
-fn store_debug_u64(lo: &AtomicU32, hi: &AtomicU32, value: u64) {
-    lo.store(value as u32, Ordering::Relaxed);
-    hi.store((value >> 32) as u32, Ordering::Relaxed);
 }
 
 pub(crate) fn init(cs: CriticalSection) {

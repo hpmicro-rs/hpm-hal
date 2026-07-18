@@ -9,9 +9,16 @@ use crate::time::Hertz;
 pub const CLK_32K: Hertz = Hertz(32_768);
 pub const CLK_24M: Hertz = Hertz(24_000_000);
 
-// default clock sources
+// Default clock sources. HPM5E shares the SYSCTL register layout with HPM6E,
+// while its board-qualified PLL0 operating point is different.
+#[cfg(hpm6e)]
 const PLL0CLK0: Hertz = Hertz(600_000_000);
+#[cfg(hpm6e)]
 const PLL0CLK1: Hertz = Hertz(500_000_000);
+#[cfg(hpm5e)]
+const PLL0CLK0: Hertz = Hertz(480_000_000);
+#[cfg(hpm5e)]
+const PLL0CLK1: Hertz = Hertz(400_000_000);
 
 const PLL1CLK0: Hertz = Hertz(400_000_000);
 const PLL1CLK1: Hertz = Hertz(333_333_333);
@@ -21,11 +28,9 @@ const PLL1CLK2: Hertz = Hertz(250_000_000);
 const PLL2CLK0: Hertz = Hertz(516_096_000); // 1.4
 const PLL2CLK1: Hertz = Hertz(451_584_000); // 1.6
 
-const CLK_CPU0: Hertz = Hertz(600_000_000); // PLL0CLK0
+const CLK_CPU0: Hertz = PLL0CLK0;
 const CLK_CPU1: Hertz = Hertz(600_000_000); // PLL0CLK0
 const CLK_AHB: Hertz = Hertz(400_000_000 / 2); // PLL1CLK0 / 2
-
-const F_REF: Hertz = CLK_24M;
 
 /// The default system clock configuration
 pub(crate) static mut CLOCKS: Clocks = Clocks {
@@ -98,7 +103,19 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            pll0: None,
+            pll0: {
+                #[cfg(hpm5e)]
+                {
+                    Some(Pll {
+                        freq_in: Hertz(960_000_000),
+                        div: [5, 7],
+                    })
+                }
+                #[cfg(hpm6e)]
+                {
+                    None
+                }
+            },
             pll1: None,
             pll2: None,
             cpu0: ClockConfig::new(ClockMux::PLL0CLK0, 1),
@@ -123,19 +140,6 @@ impl ClockConfig {
             raw_div: div as u8 - 1,
         }
     }
-}
-
-#[inline]
-fn output_freq_of_pll(pll: usize) -> u64 {
-    let fref = F_REF.0 as f64;
-    let mfd = 240_000_000.0; // default value
-
-    let mfi = PLLCTL.pll(pll).mfi().read().mfi() as f64;
-    let mfn = PLLCTL.pll(pll).mfn().read().mfn() as f64;
-
-    let fvco = fref * (mfi + mfn / mfd);
-
-    fvco as u64
 }
 
 pub(crate) unsafe fn init(config: Config) {
@@ -191,11 +195,18 @@ pub(crate) unsafe fn init(config: Config) {
         SYSCTL.affiliate(1).set().write(|w| w.set_link(1 << 1));
     }
 
-    // Bump up DCDC voltage to 1175mv (default is 1150)
+    // Establish the family-qualified core voltage before selecting the fast
+    // PLL clock. HPM5E's SDK board setup uses 1275 mV at 480 MHz.
+    #[cfg(hpm5e)]
+    pac::PCFG.dcdc_mode().modify(|w| w.set_volt(1275));
+    #[cfg(hpm6e)]
     pac::PCFG.dcdc_mode().modify(|w| w.set_volt(1200));
+    while !pac::PCFG.dcdc_mode().read().ready() {}
 
-    // TODO: PLL setting
-    let pll2 = output_freq_of_pll(2);
+    #[cfg(hpm5e)]
+    if let Some(pll0) = config.pll0.as_ref() {
+        init_hpm5e_pll0(pll0);
+    }
 
     SYSCTL.clock(pac::clocks::CPU0).modify(|w| {
         w.set_mux(config.cpu0.src);
@@ -234,4 +245,49 @@ pub(crate) unsafe fn init(config: Config) {
         }
         CLOCKS.ahb = ahb_clk;
     }
+}
+
+/// Configure HPM5E PLL0 from the family clock configuration.
+///
+/// CPU0 is moved to the 24 MHz oscillator while PLL0 is changing so runtime
+/// behavior does not depend on the PLL state left by ROM or a flash algorithm.
+#[cfg(hpm5e)]
+unsafe fn init_hpm5e_pll0(config: &Pll<[u8; 2]>) {
+    let cpu0 = SYSCTL.clock(pac::clocks::CPU0);
+    cpu0.modify(|w| {
+        w.set_mux(ClockMux::CLK_24M);
+        w.set_div(0);
+    });
+    while cpu0.read().glb_busy() {}
+
+    let pll0 = PLLCTL.pll(0);
+    let (mfi, mfn) = config.get_params().expect("PLL0 VCO frequency is out of range");
+    pll0.mfn().write(|w| w.set_mfn(mfn));
+    pll0.mfi().modify(|w| w.set_mfi(mfi));
+    loop {
+        let status = pll0.mfi().read();
+        if !status.enable() || (!status.busy() && status.response()) {
+            break;
+        }
+    }
+
+    pll0.div(0).modify(|w| w.set_div(config.div[0]));
+    loop {
+        let status = pll0.div(0).read();
+        if !status.enable() || (!status.busy() && status.response()) {
+            break;
+        }
+    }
+
+    pll0.div(1).modify(|w| w.set_div(config.div[1]));
+    loop {
+        let status = pll0.div(1).read();
+        if !status.enable() || (!status.busy() && status.response()) {
+            break;
+        }
+    }
+
+    let fvco = config.freq_in.0 as u64;
+    CLOCKS.pll0clk0 = Hertz((fvco * 5 / (config.div[0] as u64 + 5)) as u32);
+    CLOCKS.pll0clk1 = Hertz((fvco * 5 / (config.div[1] as u64 + 5)) as u32);
 }

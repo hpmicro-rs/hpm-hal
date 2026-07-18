@@ -1,7 +1,8 @@
 //! Embassy time driver using machine timer(mchtmr)
 
-use core::cell::{Cell, RefCell, UnsafeCell};
+use core::cell::{Cell, RefCell};
 use core::ptr::{read_volatile, write_volatile};
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use critical_section::CriticalSection;
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
@@ -13,75 +14,6 @@ use hpm_metapac::{MCHTMR, SYSCTL};
 
 use crate::pac;
 use crate::sysctl::ClockConfig;
-
-#[repr(transparent)]
-struct DebugReg(UnsafeCell<u32>);
-
-unsafe impl Sync for DebugReg {}
-
-impl DebugReg {
-    const fn new(value: u32) -> Self {
-        Self(UnsafeCell::new(value))
-    }
-
-    #[inline(always)]
-    fn load(&self) -> u32 {
-        let value: u32;
-        unsafe {
-            core::arch::asm!(
-                "lw {value}, 0({ptr})",
-                ptr = in(reg) self.0.get(),
-                value = out(reg) value,
-                options(nostack, preserves_flags),
-            );
-        }
-        value
-    }
-
-    #[inline(always)]
-    fn store(&self, value: u32) {
-        unsafe {
-            core::arch::asm!(
-                "sw {value}, 0({ptr})",
-                ptr = in(reg) self.0.get(),
-                value = in(reg) value,
-                options(nostack, preserves_flags),
-            );
-        }
-    }
-
-    #[inline(always)]
-    fn increment(&self) {
-        self.store(self.load().wrapping_add(1));
-    }
-}
-
-#[unsafe(no_mangle)]
-static MCHTMR_DEBUG_PERIOD: DebugReg = DebugReg::new(0);
-#[unsafe(no_mangle)]
-static MCHTMR_DEBUG_IRQ_COUNT: DebugReg = DebugReg::new(0);
-#[unsafe(no_mangle)]
-static MCHTMR_DEBUG_SET_ALARM_COUNT: DebugReg = DebugReg::new(0);
-#[unsafe(no_mangle)]
-static MCHTMR_DEBUG_TRIGGER_COUNT: DebugReg = DebugReg::new(0);
-#[unsafe(no_mangle)]
-static MCHTMR_DEBUG_SCHEDULE_COUNT: DebugReg = DebugReg::new(0);
-#[unsafe(no_mangle)]
-static MCHTMR_DEBUG_LAST_NOW_LO: DebugReg = DebugReg::new(0);
-#[unsafe(no_mangle)]
-static MCHTMR_DEBUG_LAST_NOW_HI: DebugReg = DebugReg::new(0);
-#[unsafe(no_mangle)]
-static MCHTMR_DEBUG_LAST_AT_LO: DebugReg = DebugReg::new(0);
-#[unsafe(no_mangle)]
-static MCHTMR_DEBUG_LAST_AT_HI: DebugReg = DebugReg::new(0);
-#[unsafe(no_mangle)]
-static MCHTMR_DEBUG_LAST_NEXT_LO: DebugReg = DebugReg::new(0);
-#[unsafe(no_mangle)]
-static MCHTMR_DEBUG_LAST_NEXT_HI: DebugReg = DebugReg::new(0);
-#[unsafe(no_mangle)]
-static MCHTMR_DEBUG_LAST_HW_LO: DebugReg = DebugReg::new(0);
-#[unsafe(no_mangle)]
-static MCHTMR_DEBUG_LAST_HW_HI: DebugReg = DebugReg::new(0);
 
 struct AlarmState {
     timestamp: Cell<u64>,
@@ -100,7 +32,7 @@ impl AlarmState {
 /// HPM Machine Timer Driver using 64-bit MCHTMR peripheral
 pub struct MachineTimerDriver {
     /// Hardware counter to Embassy tick conversion factor
-    period: DebugReg,
+    period: AtomicU32,
     /// Current hardware alarm state
     alarm: BlockingMutex<CriticalSectionRawMutex, AlarmState>,
     /// Standard queue for managing concurrent timers
@@ -108,17 +40,13 @@ pub struct MachineTimerDriver {
 }
 
 embassy_time_driver::time_driver_impl!(static DRIVER: MachineTimerDriver = MachineTimerDriver {
-    period: DebugReg::new(1), // avoid div by zero, will be set in init
+    period: AtomicU32::new(1), // avoid div by zero, will be set in init
     alarm: BlockingMutex::const_new(CriticalSectionRawMutex::new(), AlarmState::new()),
     queue: BlockingMutex::const_new(CriticalSectionRawMutex::new(), RefCell::new(Queue::new())),
 });
 
 impl MachineTimerDriver {
     fn init(&'static self) {
-        // FIXME: The name in SDK is MCHTMR0
-        #[cfg(hpm67)]
-        let regs = SYSCTL.clock(pac::clocks::MCHTMR0).read();
-        #[cfg(not(hpm67))]
         let regs = SYSCTL.clock(pac::clocks::MCT0).read();
 
         let mchtmr_cfg = ClockConfig {
@@ -130,8 +58,7 @@ impl MachineTimerDriver {
         let cnt_per_second = crate::sysctl::clocks().get_freq(&mchtmr_cfg).0 as u64;
         let cnt_per_tick = cnt_per_second / embassy_time_driver::TICK_HZ;
 
-        self.period.store(cnt_per_tick as u32);
-        MCHTMR_DEBUG_PERIOD.store(cnt_per_tick as u32);
+        self.period.store(cnt_per_tick as u32, Ordering::Relaxed);
 
         keep_mchtmr_running_in_wfi();
 
@@ -161,8 +88,6 @@ impl MachineTimerDriver {
 
     #[inline(always)]
     fn on_interrupt(&self) {
-        MCHTMR_DEBUG_IRQ_COUNT.increment();
-
         unsafe {
             riscv::register::mie::clear_mtimer();
         }
@@ -174,9 +99,6 @@ impl MachineTimerDriver {
 
     /// Set hardware alarm for the given timestamp
     fn set_alarm(&self, cs: CriticalSection, timestamp: u64) -> bool {
-        MCHTMR_DEBUG_SET_ALARM_COUNT.increment();
-        store_u64(&MCHTMR_DEBUG_LAST_AT_LO, &MCHTMR_DEBUG_LAST_AT_HI, timestamp);
-
         let alarm = self.alarm.borrow(cs);
         alarm.timestamp.set(timestamp);
 
@@ -189,16 +111,14 @@ impl MachineTimerDriver {
         }
 
         let now = self.now();
-        store_u64(&MCHTMR_DEBUG_LAST_NOW_LO, &MCHTMR_DEBUG_LAST_NOW_HI, now);
         if timestamp <= now {
             alarm.timestamp.set(u64::MAX);
             return false;
         }
 
         // Convert embassy timestamp to hardware timestamp
-        let period = self.period.load() as u64;
+        let period = self.period.load(Ordering::Relaxed) as u64;
         let hardware_timestamp = timestamp.saturating_add(1).saturating_mul(period);
-        store_u64(&MCHTMR_DEBUG_LAST_HW_LO, &MCHTMR_DEBUG_LAST_HW_HI, hardware_timestamp);
 
         mchtmr_write_mtimecmp(hardware_timestamp);
 
@@ -212,30 +132,23 @@ impl MachineTimerDriver {
 
     #[inline(always)]
     fn trigger_alarm(&self, cs: CriticalSection) {
-        MCHTMR_DEBUG_TRIGGER_COUNT.increment();
-
         // Process expired timers from queue
         let mut queue = self.queue.borrow(cs).borrow_mut();
         let mut next = queue.next_expiration(self.now());
-        store_u64(&MCHTMR_DEBUG_LAST_NEXT_LO, &MCHTMR_DEBUG_LAST_NEXT_HI, next);
 
         // Retry until alarm is successfully set
         while !self.set_alarm(cs, next) {
             next = queue.next_expiration(self.now());
-            store_u64(&MCHTMR_DEBUG_LAST_NEXT_LO, &MCHTMR_DEBUG_LAST_NEXT_HI, next);
         }
     }
 }
 
 impl embassy_time_driver::Driver for MachineTimerDriver {
     fn now(&self) -> u64 {
-        mchtmr_read_mtime() / self.period.load() as u64
+        mchtmr_read_mtime() / self.period.load(Ordering::Relaxed) as u64
     }
 
     fn schedule_wake(&self, at: u64, waker: &core::task::Waker) {
-        MCHTMR_DEBUG_SCHEDULE_COUNT.increment();
-        store_u64(&MCHTMR_DEBUG_LAST_AT_LO, &MCHTMR_DEBUG_LAST_AT_HI, at);
-
         critical_section::with(|cs| {
             let mut queue = self.queue.borrow(cs).borrow_mut();
 
@@ -245,10 +158,8 @@ impl embassy_time_driver::Driver for MachineTimerDriver {
             if should_update {
                 // Update hardware alarm with earliest expiration time
                 let mut next = queue.next_expiration(self.now());
-                store_u64(&MCHTMR_DEBUG_LAST_NEXT_LO, &MCHTMR_DEBUG_LAST_NEXT_HI, next);
                 while !self.set_alarm(cs, next) {
                     next = queue.next_expiration(self.now());
-                    store_u64(&MCHTMR_DEBUG_LAST_NEXT_LO, &MCHTMR_DEBUG_LAST_NEXT_HI, next);
                 }
             }
         })
@@ -268,25 +179,8 @@ pub(crate) fn init() {
 }
 
 fn keep_mchtmr_running_in_wfi() {
-    #[cfg(hpm67)]
-    {
-        SYSCTL
-            .resource(pac::resources::CLK_TOP_MCHTMR0)
-            .modify(|w| w.set_mode(1));
-        SYSCTL.resource(pac::resources::MCHTMR0).modify(|w| w.set_mode(1));
-    }
-
-    #[cfg(not(hpm67))]
-    {
-        SYSCTL.resource(pac::resources::CLK_TOP_MCT0).modify(|w| w.set_mode(1));
-        SYSCTL.resource(pac::resources::MCT0).modify(|w| w.set_mode(1));
-    }
-}
-
-#[inline(always)]
-fn store_u64(lo: &DebugReg, hi: &DebugReg, value: u64) {
-    lo.store(value as u32);
-    hi.store((value >> 32) as u32);
+    SYSCTL.resource(pac::resources::CLK_TOP_MCT0).modify(|w| w.set_mode(1));
+    SYSCTL.resource(pac::resources::MCT0).modify(|w| w.set_mode(1));
 }
 
 #[inline(always)]

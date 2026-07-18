@@ -120,7 +120,10 @@ impl From<pac::ewdg::regs::WdtStatus> for Status {
             refresh_unlock_fail: reg.ref_unl_fail(),
             ctrl_violation: reg.ctl_vio(),
             ctrl_unlock_fail: reg.ctl_unl_fail(),
+            #[cfg(not(hpm68))]
             timeout_interrupt: reg.ot_int(),
+            #[cfg(hpm68)]
+            timeout_interrupt: false,
             timeout_reset: reg.ot_rst(),
             parity_error: reg.parity_error(),
         }
@@ -178,7 +181,7 @@ impl<'d, T: Instance> Watchdog<'d, T> {
         let r = T::regs();
 
         // Calculate timeout ticks
-        let timeout_us = timeout.as_micros() as u64;
+        let timeout_us = timeout.as_micros();
         let mut ticks = timeout_us * self.clock_freq as u64 / 1_000_000;
 
         // Find appropriate divider (2^div_value)

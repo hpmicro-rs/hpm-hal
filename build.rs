@@ -175,7 +175,7 @@ fn main() {
 
     // IP feature gates, usesage: #[cfg(ip_feature_adc16_has_tempsns)]
     for feature in get_ip_features(&family_name) {
-        cfgs.enable(&format!("ip_feature_{}", feature.to_ascii_lowercase()));
+        cfgs.enable(format!("ip_feature_{}", feature.to_ascii_lowercase()));
     }
 
     // Time driver selection
@@ -244,7 +244,10 @@ fn main() {
     // For peripherals_struct, exclude the time driver peripheral (if using GPTMR)
     let singleton_tokens: Vec<_> = singletons
         .iter()
-        .filter(|s| time_driver_gptmr.map_or(true, |td| *s != td))
+        .filter(|s| match time_driver_gptmr {
+            Some(td) => *s != td,
+            None => true,
+        })
         .map(|s| format_ident!("{}", s))
         .collect();
 
@@ -554,13 +557,13 @@ fn main() {
     let mut dma_irqs: BTreeMap<&str, &str> = BTreeMap::new();
 
     for p in METADATA.peripherals {
-        if let Some(r) = &p.registers {
-            if r.kind == "dma" {
-                for irq in p.interrupts {
-                    // only 1 global DMA interrupt per controller
-                    assert_eq!(irq.signal, "GLOBAL");
-                    dma_irqs.insert(irq.interrupt, p.name);
-                }
+        if let Some(r) = &p.registers
+            && r.kind == "dma"
+        {
+            for irq in p.interrupts {
+                // only 1 global DMA interrupt per controller
+                assert_eq!(irq.signal, "GLOBAL");
+                dma_irqs.insert(irq.interrupt, p.name);
             }
         }
     }
@@ -576,7 +579,6 @@ fn main() {
                 #[hpm_riscv_rt::external_interrupt(hpm_metapac::interrupt::#irq)]
                 fn #irq() {
                     unsafe { <crate::peripherals::#peri_name as crate::dma::ControllerInterrupt>::on_irq() };
-                    crate::interrupt::InterruptExt::complete(crate::interrupt::#irq);
                 }
             }
         })
@@ -746,6 +748,12 @@ pub struct CfgSet {
     enabled: std::collections::HashSet<String>,
     declared: std::collections::HashSet<String>,
     emit_declared: bool,
+}
+
+impl Default for CfgSet {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl CfgSet {

@@ -135,12 +135,12 @@ pub(crate) unsafe fn init(config: Config) {
     clock_add_to_group(pac::resources::AXI_SRAM0, 0);
     clock_add_to_group(pac::resources::AXI_SRAM1, 0);
 
-    clock_add_to_group(pac::resources::ROM, 0);
+    clock_add_to_group(pac::resources::ROM0, 0);
     clock_add_to_group(pac::resources::XPI0, 0);
     clock_add_to_group(pac::resources::XPI1, 0);
     clock_add_to_group(pac::resources::FEMC, 0);
 
-    clock_add_to_group(pac::resources::MCHTMR0, 0);
+    clock_add_to_group(pac::resources::MCT0, 0);
     clock_add_to_group(pac::resources::LMM0, 0);
     clock_add_to_group(pac::resources::LMM1, 0);
 
@@ -151,7 +151,7 @@ pub(crate) unsafe fn init(config: Config) {
     // Connect Group0 to CPU0
     SYSCTL.affiliate(0).set().write(|w| w.set_link(1 << 0));
 
-    clock_add_to_group(pac::resources::MCHTMR1, 1);
+    clock_add_to_group(pac::resources::MCT1, 1);
     clock_add_to_group(pac::resources::MBX1, 1);
 
     SYSCTL.affiliate(1).set().write(|w| w.set_link(1 << 1));

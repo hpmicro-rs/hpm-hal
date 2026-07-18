@@ -108,9 +108,10 @@ impl ChannelState {
 
 pub(crate) unsafe fn init(cs: critical_section::CriticalSection) {
     use crate::interrupt;
-    use crate::sysctl::SealedClockPeripheral;
-
-    crate::peripherals::HDMA::add_resource_group(0);
+    #[cfg(any(hpm63, hpm67))]
+    crate::sysctl::clock_add_to_group(pac::resources::DMA0, 0);
+    #[cfg(not(any(hpm63, hpm67)))]
+    crate::sysctl::clock_add_to_group(pac::resources::HDMA, 0);
 
     pac::HDMA.dmactrl().modify(|w| w.set_reset(true));
 
@@ -119,7 +120,10 @@ pub(crate) unsafe fn init(cs: critical_section::CriticalSection) {
 
     #[cfg(peri_xdma)]
     {
-        crate::peripherals::XDMA::add_resource_group(0);
+        #[cfg(any(hpm63, hpm67))]
+        crate::sysctl::clock_add_to_group(pac::resources::DMA1, 0);
+        #[cfg(not(any(hpm63, hpm67)))]
+        crate::sysctl::clock_add_to_group(pac::resources::XDMA, 0);
 
         pac::XDMA.dmactrl().modify(|w| w.set_reset(true));
 

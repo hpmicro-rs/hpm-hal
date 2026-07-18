@@ -4,15 +4,53 @@ use core::task::Poll;
 use embassy_usb_driver::EndpointError;
 use futures_util::future::poll_fn;
 
-use super::endpoint::{Endpoint, In, Out};
-use super::{Instance, get_active_ep_state};
-use crate::usb::{EP_IN_WAKERS, EP_OUT_WAKERS};
+use super::Instance;
+use super::endpoint::{Endpoint, In, Out, clear_completion, completion_set};
+use crate::usb::{EP_IN_COMPLETE, EP_IN_WAKERS, EP_OUT_COMPLETE, EP_OUT_WAKERS};
 
 pub struct ControlPipe<'d, T: Instance> {
     pub(crate) _phantom: PhantomData<&'d mut T>,
     pub(crate) max_packet_size: usize,
     pub(crate) ep_in: Endpoint<'d, T, In>,
     pub(crate) ep_out: Endpoint<'d, T, Out>,
+}
+
+impl<'d, T: Instance> ControlPipe<'d, T> {
+    async fn wait_out_complete(&mut self) {
+        poll_fn(|cx| {
+            EP_OUT_WAKERS[0].register(cx.waker());
+            if completion_set(&EP_OUT_COMPLETE, 0) {
+                unsafe {
+                    core::arch::asm!("fence iorw, iorw", options(nostack, preserves_flags));
+                }
+                if self.ep_out.transfer_retired() {
+                    clear_completion(&EP_OUT_COMPLETE, 0);
+                    return Poll::Ready(());
+                }
+                cx.waker().wake_by_ref();
+            }
+            Poll::Pending
+        })
+        .await;
+    }
+
+    async fn wait_in_complete(&mut self) {
+        poll_fn(|cx| {
+            EP_IN_WAKERS[0].register(cx.waker());
+            if completion_set(&EP_IN_COMPLETE, 0) {
+                unsafe {
+                    core::arch::asm!("fence iorw, iorw", options(nostack, preserves_flags));
+                }
+                if self.ep_in.transfer_retired() {
+                    clear_completion(&EP_IN_COMPLETE, 0);
+                    return Poll::Ready(());
+                }
+                cx.waker().wake_by_ref();
+            }
+            Poll::Pending
+        })
+        .await;
+    }
 }
 
 impl<'d, T: Instance> embassy_usb_driver::ControlPipe for ControlPipe<'d, T> {
@@ -25,15 +63,10 @@ impl<'d, T: Instance> embassy_usb_driver::ControlPipe for ControlPipe<'d, T> {
     async fn setup(&mut self) -> [u8; 8] {
         let r = T::info().regs;
 
-        // Clear interrupt status(by writing 1) and enable USB interrupt first
-        r.usbsts().write(|w| w.set_ui(true));
-        while r.usbsts().read().ui() {}
-        r.usbintr().modify(|w| w.set_ue(true));
-        // Wait for SETUP packet
-        let _ = poll_fn(|cx| {
+        poll_fn(|cx| {
             EP_OUT_WAKERS[0].register(cx.waker());
             if r.endptsetupstat().read().0 & 1 > 0 {
-                return Poll::Ready(Ok::<(), ()>(()));
+                return Poll::Ready(());
             }
 
             Poll::Pending
@@ -42,10 +75,9 @@ impl<'d, T: Instance> embassy_usb_driver::ControlPipe for ControlPipe<'d, T> {
 
         // Read setup packet from qHD using the setup tripwire sequence.
         let setup = unsafe {
-            let ep_state = get_active_ep_state();
             loop {
                 r.usbcmd().modify(|w| w.set_sutw(true));
-                let setup = ep_state.qhd_list().qhd(0).get_setup_request();
+                let setup = self.ep_out.ep_state.qhd_list().qhd(0).get_setup_request();
                 if r.usbcmd().read().sutw() {
                     break setup;
                 }
@@ -53,11 +85,11 @@ impl<'d, T: Instance> embassy_usb_driver::ControlPipe for ControlPipe<'d, T> {
         };
         r.usbcmd().modify(|w| w.set_sutw(false));
         r.endptsetupstat().write(|w| w.set_endptsetupstat(1));
-        r.endptcomplete().write(|w| w.set_erce(1));
-
-        // Clear interrupt status and re-enable USB interrupt
-        r.usbsts().write(|w| w.set_ui(true));
-        while r.usbsts().read().ui() {}
+        let _ = r.endptsetupstat().read();
+        clear_completion(&EP_OUT_COMPLETE, 0);
+        unsafe {
+            core::arch::asm!("fence iorw, iorw", options(nostack, preserves_flags));
+        }
         r.usbintr().modify(|w| w.set_ue(true));
 
         setup
@@ -73,21 +105,10 @@ impl<'d, T: Instance> embassy_usb_driver::ControlPipe for ControlPipe<'d, T> {
         _first: bool,
         _last: bool,
     ) -> Result<usize, embassy_usb_driver::EndpointError> {
-        let r = T::info().regs;
         self.ep_out.transfer(buf).map_err(|_e| EndpointError::Disabled)?;
-        let _ = poll_fn(|cx| {
-            EP_OUT_WAKERS[0].register(cx.waker());
-            if r.endptcomplete().read().erce() & 1 > 0 {
-                // Clear the flag
-                r.endptcomplete().write(|w| w.set_erce(1));
-                return Poll::Ready(Ok::<(), ()>(()));
-            }
+        self.wait_out_complete().await;
 
-            Poll::Pending
-        })
-        .await;
-
-        Ok(buf.len())
+        Ok(self.ep_out.transferred_len(buf.len()))
     }
 
     /// Send a DATA IN packet with `data` in response to a control read request.
@@ -99,20 +120,8 @@ impl<'d, T: Instance> embassy_usb_driver::ControlPipe for ControlPipe<'d, T> {
         _first: bool,
         last: bool,
     ) -> Result<(), embassy_usb_driver::EndpointError> {
-        let r = T::info().regs;
         self.ep_in.transfer(data).map_err(|_| EndpointError::BufferOverflow)?;
-
-        let _ = poll_fn(|cx| {
-            EP_IN_WAKERS[0].register(cx.waker());
-            if r.endptcomplete().read().etce() & 1 > 0 {
-                // Clear the flag
-                r.endptcomplete().write(|w| w.set_etce(1));
-                return Poll::Ready(Ok::<(), ()>(()));
-            }
-
-            Poll::Pending
-        })
-        .await;
+        self.wait_in_complete().await;
 
         if last {
             // ZLT with empty buffer never fails
@@ -125,21 +134,9 @@ impl<'d, T: Instance> embassy_usb_driver::ControlPipe for ControlPipe<'d, T> {
     ///
     /// Causes the STATUS packet for the current request to be ACKed.
     async fn accept(&mut self) {
-        let r = T::info().regs;
         // ZLT with empty buffer never fails
         let _ = self.ep_in.transfer(&[]);
-
-        let _ = poll_fn(|cx| {
-            EP_IN_WAKERS[0].register(cx.waker());
-            if r.endptcomplete().read().etce() & 1 > 0 {
-                // Clear the flag
-                r.endptcomplete().write(|w| w.set_etce(1));
-                return Poll::Ready(Ok::<(), ()>(()));
-            }
-
-            Poll::Pending
-        })
-        .await;
+        self.wait_in_complete().await;
     }
 
     /// Reject a control request.
