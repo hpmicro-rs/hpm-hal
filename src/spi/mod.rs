@@ -204,6 +204,8 @@ pub enum Error {
     FifoFull,
 }
 
+pub mod slave;
+
 // - MARK: SPI driver
 
 /// SPI driver.
