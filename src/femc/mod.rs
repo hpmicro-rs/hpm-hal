@@ -14,23 +14,29 @@
 //! Use the type-safe constructor with compile-time pin checking:
 //!
 //! ```ignore
-//! use hpm_hal::femc::{Femc, chips::W9812g6jh6};
+//! use hpm_hal::femc::{
+//!     ControlPins, Sdram, SdramPins,
+//!     chips::W9812g6jh6,
+//! };
 //!
-//! let sdram = Femc::sdram_a12bits_d16bits_4banks_cs0(
+//! let sdram = Sdram::new_cs0(
 //!     p.FEMC,
-//!     // Address pins A0-A11
-//!     p.PC08, p.PC09, p.PC04, p.PC05, p.PC06, p.PC07,
-//!     p.PC10, p.PC11, p.PC12, p.PC17, p.PC15, p.PC21,
-//!     // Bank address BA0-BA1
-//!     p.PC13, p.PC14,
-//!     // Data DQ0-DQ15
-//!     p.PD08, p.PD05, p.PD00, p.PD01, p.PD02, p.PC27, p.PC28, p.PC29,
-//!     p.PD04, p.PD03, p.PD07, p.PD06, p.PD10, p.PD09, p.PD13, p.PD12,
-//!     // Data mask DM0-DM1
-//!     p.PC30, p.PC31,
-//!     // Control: DQS, CLK, CKE, RAS, CAS, WE, CS0
-//!     p.PC16, p.PC26, p.PC25, p.PC18, p.PC23, p.PC24, p.PC19,
-//!     // Chip configuration
+//!     SdramPins {
+//!         address: (
+//!             p.PC08, p.PC09, p.PC04, p.PC05, p.PC06, p.PC07,
+//!             p.PC10, p.PC11, p.PC12, p.PC17, p.PC15, p.PC21,
+//!         ),
+//!         banks: (p.PC13, p.PC14),
+//!         data: (
+//!             p.PD08, p.PD05, p.PD00, p.PD01, p.PD02, p.PC27, p.PC28, p.PC29,
+//!             p.PD04, p.PD03, p.PD07, p.PD06, p.PD10, p.PD09, p.PD13, p.PD12,
+//!         ),
+//!         masks: (p.PC30, p.PC31),
+//!         control: ControlPins {
+//!             dqs: p.PC16, clk: p.PC26, cke: p.PC25, ras: p.PC18,
+//!             cas: p.PC23, we: p.PC24, cs: p.PC19,
+//!         },
+//!     },
 //!     W9812g6jh6,
 //! );
 //!
@@ -62,19 +68,24 @@
 //! ```
 
 pub mod chips;
+pub mod geometry;
 
-use core::marker::PhantomData;
-use core::mem;
+use core::{marker::PhantomData, mem};
 
 use embassy_hal_internal::{Peri, PeripheralType};
 use embedded_hal::delay::DelayNs;
+
+use crate::gpio::Pin;
+
+use geometry::{
+    Address11, Address12, Address13, Banks2, Banks4, Data8, Data16, Data32, SdramAddressWidth, SdramBankCount,
+    SdramDataWidth,
+};
 
 pub use chips::SdramChip;
 pub use hpm_metapac::femc::vals::{
     Bank2Sel, BurstLen, CasLatency, ColAddrBits, DataSize, Dqs, MemorySize, SdramCmd, SdramPortSize,
 };
-
-use crate::gpio::Pin;
 
 const HPM_FEMC_DRV_RETRY_COUNT: usize = 5000;
 const FEMC_CMD_KEY: u16 = 0x5AA5;
@@ -251,9 +262,9 @@ impl FemcSdramConfig {
             col_addr_bits: chip.col_addr_bits(),
             cas_latency: chip.cas_latency(),
             cs,
-            bank_num: chip.bank_num(),
+            bank_num: C::BankCount::BANK_NUM,
             prescaler: chip.prescaler(),
-            port_size: chip.port_size(),
+            port_size: C::DataWidth::PORT_SIZE,
             burst_len: chip.burst_len(),
             cke_off_in_ns: chip.t_cke_off(),
             act_to_precharge_in_ns: chip.t_ras(),
@@ -729,6 +740,26 @@ pub struct Sdram<'d, T: Instance, C: SdramChip> {
 }
 
 impl<'d, T: Instance + PeripheralType, C: SdramChip> Sdram<'d, T, C> {
+    /// Create an SDRAM controller on CS0 from a type-checked pin set.
+    ///
+    /// The pin set's address width, data width, and bank count must match the
+    /// geometry declared by `C`. Each tuple position is also checked against
+    /// its individual FEMC pin trait.
+    pub fn new_cs0<P>(_peri: Peri<'d, T>, pins: P, chip: C) -> Self
+    where
+        P: SdramPinSet<T, AddressWidth = C::AddressWidth, DataWidth = C::DataWidth, BankCount = C::BankCount>,
+    {
+        T::add_resource_group(0);
+        pins.configure();
+
+        Self {
+            _peri: PhantomData,
+            base_address: chip.base_address(),
+            chip,
+            cs: 0,
+        }
+    }
+
     /// Initialize the SDRAM controller and memory.
     ///
     /// This method performs the full SDRAM initialization sequence:
@@ -764,7 +795,8 @@ impl<'d, T: Instance + PeripheralType, C: SdramChip> Sdram<'d, T, C> {
         // Wait for SDRAM power-up
         delay.delay_us(200);
 
-        let _ = femc.configure_sdram(clk_hz, config);
+        femc.configure_sdram(clk_hz, config)
+            .expect("failed to configure FEMC SDRAM");
 
         self.base_address as *mut u32
     }
@@ -807,19 +839,261 @@ fn memory_size_to_bytes(size: MemorySize) -> usize {
     }
 }
 
-// ============================================================================
-// Type-safe constructors
-// ============================================================================
-
-/// Configure a pin for FEMC alternate function.
+/// Complete pin set for an SDRAM device.
 ///
-/// This function sets the pin to the correct alternate function for FEMC.
+/// Address, bank, data, and mask pins are tuples ordered by their FEMC signal
+/// number. Each tuple position is checked against its individual pin trait.
+pub struct SdramPins<A, B, D, M, C> {
+    pub address: A,
+    pub banks: B,
+    pub data: D,
+    pub masks: M,
+    pub control: C,
+}
+
+/// Control pins shared by every SDRAM configuration on a chip-select line.
+pub struct ControlPins<DQS, CLK, CKE, RAS, CAS, WE, CS> {
+    pub dqs: DQS,
+    pub clk: CLK,
+    pub cke: CKE,
+    pub ras: RAS,
+    pub cas: CAS,
+    pub we: WE,
+    pub cs: CS,
+}
+
+/// Compile-time description of a valid SDRAM pin set.
+///
+/// This trait is public only because it appears in [`Sdram::new_cs0`]'s
+/// generic bounds. It is sealed and cannot be implemented downstream.
+#[doc(hidden)]
+pub trait SdramPinSet<T: Instance>: sealed::SdramPinSet<T> {
+    type AddressWidth: SdramAddressWidth;
+    type DataWidth: SdramDataWidth;
+    type BankCount: SdramBankCount;
+
+    fn configure(self);
+}
+
+#[doc(hidden)]
+pub trait AddressPinGroup<T: Instance>: sealed::AddressPinGroup<T> {
+    type Width: SdramAddressWidth;
+
+    fn configure(self);
+}
+
+#[doc(hidden)]
+pub trait BankPinGroup<T: Instance>: sealed::BankPinGroup<T> {
+    type Count: SdramBankCount;
+
+    fn configure(self);
+}
+
+#[doc(hidden)]
+pub trait DataPinGroup<T: Instance>: sealed::DataPinGroup<T> {
+    type Width: SdramDataWidth;
+
+    fn configure(self);
+}
+
+#[doc(hidden)]
+pub trait DataMaskPinGroup<T: Instance>: sealed::DataMaskPinGroup<T> {
+    type Width: SdramDataWidth;
+
+    fn configure(self);
+}
+
+#[doc(hidden)]
+pub trait Cs0ControlPinGroup<T: Instance>: sealed::Cs0ControlPinGroup<T> {
+    fn configure(self);
+}
+
+// All public extension points in this module are sealed here. `Instance`
+// restricts FEMC implementations to generated peripherals, while the pin-set
+// traits prevent downstream code from claiming a geometry that did not pass
+// the per-signal pin checks below.
+mod sealed {
+    pub trait Instance: crate::sysctl::ClockPeripheral {
+        const REGS: crate::pac::femc::Femc;
+    }
+
+    pub trait SdramPinSet<T> {}
+    pub trait AddressPinGroup<T> {}
+    pub trait BankPinGroup<T> {}
+    pub trait DataPinGroup<T> {}
+    pub trait DataMaskPinGroup<T> {}
+    pub trait Cs0ControlPinGroup<T> {}
+}
+
 #[inline]
-fn configure_femc_pin<P: Pin>(pin: &P, alt_num: u8, loop_back: bool) {
+fn configure_pin<P: Pin>(pin: &P, alt_num: u8, loop_back: bool) {
     pin.ioc_pad().func_ctl().write(|w| {
         w.set_alt_select(alt_num);
         w.set_loop_back(loop_back);
     });
+}
+
+macro_rules! impl_pin_group {
+    ($group_trait:ident, $associated:ident = $width:ty; $(($pin_ty:ident, $pin:ident, $pin_trait:ident)),+ $(,)?) => {
+        impl<'d, T, $($pin_ty),+> sealed::$group_trait<T> for ($(Peri<'d, $pin_ty>,)+)
+        where
+            T: Instance,
+            $($pin_ty: $pin_trait<T>,)+
+        {}
+
+        impl<'d, T, $($pin_ty),+> $group_trait<T> for ($(Peri<'d, $pin_ty>,)+)
+        where
+            T: Instance,
+            $($pin_ty: $pin_trait<T>,)+
+        {
+            type $associated = $width;
+
+            fn configure(self) {
+                let ($($pin,)+) = self;
+                $(configure_pin(&*$pin, $pin.alt_num(), false);)+
+            }
+        }
+    };
+}
+
+impl_pin_group!(AddressPinGroup, Width = Address11;
+    (A0, a0, A00Pin), (A1, a1, A01Pin), (A2, a2, A02Pin),
+    (A3, a3, A03Pin), (A4, a4, A04Pin), (A5, a5, A05Pin),
+    (A6, a6, A06Pin), (A7, a7, A07Pin), (A8, a8, A08Pin),
+    (A9, a9, A09Pin), (A10, a10, A10Pin),
+);
+
+impl_pin_group!(AddressPinGroup, Width = Address12;
+    (A0, a0, A00Pin), (A1, a1, A01Pin), (A2, a2, A02Pin),
+    (A3, a3, A03Pin), (A4, a4, A04Pin), (A5, a5, A05Pin),
+    (A6, a6, A06Pin), (A7, a7, A07Pin), (A8, a8, A08Pin),
+    (A9, a9, A09Pin), (A10, a10, A10Pin), (A11, a11, A11Pin),
+);
+
+impl_pin_group!(AddressPinGroup, Width = Address13;
+    (A0, a0, A00Pin), (A1, a1, A01Pin), (A2, a2, A02Pin),
+    (A3, a3, A03Pin), (A4, a4, A04Pin), (A5, a5, A05Pin),
+    (A6, a6, A06Pin), (A7, a7, A07Pin), (A8, a8, A08Pin),
+    (A9, a9, A09Pin), (A10, a10, A10Pin), (A11, a11, A11Pin),
+    (A12, a12, A12Pin),
+);
+
+impl_pin_group!(BankPinGroup, Count = Banks2; (BA0, ba0, BA0Pin));
+impl_pin_group!(BankPinGroup, Count = Banks4; (BA0, ba0, BA0Pin), (BA1, ba1, BA1Pin));
+
+impl_pin_group!(DataPinGroup, Width = Data8;
+    (D0, d0, DQ00Pin), (D1, d1, DQ01Pin), (D2, d2, DQ02Pin), (D3, d3, DQ03Pin),
+    (D4, d4, DQ04Pin), (D5, d5, DQ05Pin), (D6, d6, DQ06Pin), (D7, d7, DQ07Pin),
+);
+
+impl_pin_group!(DataPinGroup, Width = Data16;
+    (D0, d0, DQ00Pin), (D1, d1, DQ01Pin), (D2, d2, DQ02Pin), (D3, d3, DQ03Pin),
+    (D4, d4, DQ04Pin), (D5, d5, DQ05Pin), (D6, d6, DQ06Pin), (D7, d7, DQ07Pin),
+    (D8, d8, DQ08Pin), (D9, d9, DQ09Pin), (D10, d10, DQ10Pin), (D11, d11, DQ11Pin),
+    (D12, d12, DQ12Pin), (D13, d13, DQ13Pin), (D14, d14, DQ14Pin), (D15, d15, DQ15Pin),
+);
+
+impl_pin_group!(DataPinGroup, Width = Data32;
+    (D0, d0, DQ00Pin), (D1, d1, DQ01Pin), (D2, d2, DQ02Pin), (D3, d3, DQ03Pin),
+    (D4, d4, DQ04Pin), (D5, d5, DQ05Pin), (D6, d6, DQ06Pin), (D7, d7, DQ07Pin),
+    (D8, d8, DQ08Pin), (D9, d9, DQ09Pin), (D10, d10, DQ10Pin), (D11, d11, DQ11Pin),
+    (D12, d12, DQ12Pin), (D13, d13, DQ13Pin), (D14, d14, DQ14Pin), (D15, d15, DQ15Pin),
+    (D16, d16, DQ16Pin), (D17, d17, DQ17Pin), (D18, d18, DQ18Pin), (D19, d19, DQ19Pin),
+    (D20, d20, DQ20Pin), (D21, d21, DQ21Pin), (D22, d22, DQ22Pin), (D23, d23, DQ23Pin),
+    (D24, d24, DQ24Pin), (D25, d25, DQ25Pin), (D26, d26, DQ26Pin), (D27, d27, DQ27Pin),
+    (D28, d28, DQ28Pin), (D29, d29, DQ29Pin), (D30, d30, DQ30Pin), (D31, d31, DQ31Pin),
+);
+
+impl_pin_group!(DataMaskPinGroup, Width = Data8; (DM0, dm0, DM0Pin));
+impl_pin_group!(DataMaskPinGroup, Width = Data16; (DM0, dm0, DM0Pin), (DM1, dm1, DM1Pin));
+impl_pin_group!(DataMaskPinGroup, Width = Data32;
+    (DM0, dm0, DM0Pin), (DM1, dm1, DM1Pin), (DM2, dm2, DM2Pin), (DM3, dm3, DM3Pin),
+);
+
+impl<'d, T, DQS, CLK, CKE, RAS, CAS, WE, CS> Cs0ControlPinGroup<T>
+    for ControlPins<
+        Peri<'d, DQS>,
+        Peri<'d, CLK>,
+        Peri<'d, CKE>,
+        Peri<'d, RAS>,
+        Peri<'d, CAS>,
+        Peri<'d, WE>,
+        Peri<'d, CS>,
+    >
+where
+    T: Instance,
+    DQS: DQSPin<T>,
+    CLK: CLKPin<T>,
+    CKE: CKEPin<T>,
+    RAS: RASPin<T>,
+    CAS: CASPin<T>,
+    WE: WEPin<T>,
+    CS: CS0Pin<T>,
+{
+    fn configure(self) {
+        configure_pin(&*self.dqs, self.dqs.alt_num(), true);
+        configure_pin(&*self.clk, self.clk.alt_num(), false);
+        configure_pin(&*self.cke, self.cke.alt_num(), false);
+        configure_pin(&*self.ras, self.ras.alt_num(), false);
+        configure_pin(&*self.cas, self.cas.alt_num(), false);
+        configure_pin(&*self.we, self.we.alt_num(), false);
+        configure_pin(&*self.cs, self.cs.alt_num(), false);
+    }
+}
+
+impl<'d, T, DQS, CLK, CKE, RAS, CAS, WE, CS> sealed::Cs0ControlPinGroup<T>
+    for ControlPins<
+        Peri<'d, DQS>,
+        Peri<'d, CLK>,
+        Peri<'d, CKE>,
+        Peri<'d, RAS>,
+        Peri<'d, CAS>,
+        Peri<'d, WE>,
+        Peri<'d, CS>,
+    >
+where
+    T: Instance,
+    DQS: DQSPin<T>,
+    CLK: CLKPin<T>,
+    CKE: CKEPin<T>,
+    RAS: RASPin<T>,
+    CAS: CASPin<T>,
+    WE: WEPin<T>,
+    CS: CS0Pin<T>,
+{
+}
+
+impl<T, A, B, D, M, C> SdramPinSet<T> for SdramPins<A, B, D, M, C>
+where
+    T: Instance,
+    A: AddressPinGroup<T>,
+    B: BankPinGroup<T>,
+    D: DataPinGroup<T>,
+    M: DataMaskPinGroup<T, Width = D::Width>,
+    C: Cs0ControlPinGroup<T>,
+{
+    type AddressWidth = A::Width;
+    type DataWidth = D::Width;
+    type BankCount = B::Count;
+
+    fn configure(self) {
+        self.address.configure();
+        self.banks.configure();
+        self.data.configure();
+        self.masks.configure();
+        self.control.configure();
+    }
+}
+
+impl<T, A, B, D, M, C> sealed::SdramPinSet<T> for SdramPins<A, B, D, M, C>
+where
+    T: Instance,
+    A: AddressPinGroup<T>,
+    B: BankPinGroup<T>,
+    D: DataPinGroup<T>,
+    M: DataMaskPinGroup<T, Width = D::Width>,
+    C: Cs0ControlPinGroup<T>,
+{
 }
 
 impl<'d, T: Instance + PeripheralType, C: SdramChip> Sdram<'d, T, C> {
@@ -863,6 +1137,7 @@ impl<'d, T: Instance + PeripheralType, C: SdramChip> Sdram<'d, T, C> {
     /// );
     /// let ram_ptr = sdram.init(&mut Delay);
     /// ```
+    #[deprecated(note = "Use Sdram::new_cs0 with SdramPins instead")]
     #[allow(clippy::too_many_arguments)]
     pub fn new_16bit_cs0(
         _peri: Peri<'d, T>,
@@ -912,67 +1187,31 @@ impl<'d, T: Instance + PeripheralType, C: SdramChip> Sdram<'d, T, C> {
         cs: Peri<'d, impl CS0Pin<T>>,
         // Chip configuration
         chip: C,
-    ) -> Sdram<'d, T, C> {
-        // Add to resource group
-        T::add_resource_group(0);
-
-        // Configure address pins
-        configure_femc_pin(&*a0, a0.alt_num(), false);
-        configure_femc_pin(&*a1, a1.alt_num(), false);
-        configure_femc_pin(&*a2, a2.alt_num(), false);
-        configure_femc_pin(&*a3, a3.alt_num(), false);
-        configure_femc_pin(&*a4, a4.alt_num(), false);
-        configure_femc_pin(&*a5, a5.alt_num(), false);
-        configure_femc_pin(&*a6, a6.alt_num(), false);
-        configure_femc_pin(&*a7, a7.alt_num(), false);
-        configure_femc_pin(&*a8, a8.alt_num(), false);
-        configure_femc_pin(&*a9, a9.alt_num(), false);
-        configure_femc_pin(&*a10, a10.alt_num(), false);
-        configure_femc_pin(&*a11, a11.alt_num(), false);
-
-        // Configure bank address pins
-        configure_femc_pin(&*ba0, ba0.alt_num(), false);
-        configure_femc_pin(&*ba1, ba1.alt_num(), false);
-
-        // Configure data pins
-        configure_femc_pin(&*dq0, dq0.alt_num(), false);
-        configure_femc_pin(&*dq1, dq1.alt_num(), false);
-        configure_femc_pin(&*dq2, dq2.alt_num(), false);
-        configure_femc_pin(&*dq3, dq3.alt_num(), false);
-        configure_femc_pin(&*dq4, dq4.alt_num(), false);
-        configure_femc_pin(&*dq5, dq5.alt_num(), false);
-        configure_femc_pin(&*dq6, dq6.alt_num(), false);
-        configure_femc_pin(&*dq7, dq7.alt_num(), false);
-        configure_femc_pin(&*dq8, dq8.alt_num(), false);
-        configure_femc_pin(&*dq9, dq9.alt_num(), false);
-        configure_femc_pin(&*dq10, dq10.alt_num(), false);
-        configure_femc_pin(&*dq11, dq11.alt_num(), false);
-        configure_femc_pin(&*dq12, dq12.alt_num(), false);
-        configure_femc_pin(&*dq13, dq13.alt_num(), false);
-        configure_femc_pin(&*dq14, dq14.alt_num(), false);
-        configure_femc_pin(&*dq15, dq15.alt_num(), false);
-
-        // Configure data mask pins
-        configure_femc_pin(&*dm0, dm0.alt_num(), false);
-        configure_femc_pin(&*dm1, dm1.alt_num(), false);
-
-        // Configure control pins
-        // DQS requires loop_back = true for SDRAM (C SDK behavior)
-        configure_femc_pin(&*dqs, dqs.alt_num(), true);
-        configure_femc_pin(&*clk, clk.alt_num(), false);
-        configure_femc_pin(&*cke, cke.alt_num(), false);
-        configure_femc_pin(&*ras, ras.alt_num(), false);
-        configure_femc_pin(&*cas, cas.alt_num(), false);
-        configure_femc_pin(&*we, we.alt_num(), false);
-        configure_femc_pin(&*cs, cs.alt_num(), false);
-
-        let base_address = chip.base_address();
-        Sdram {
-            _peri: PhantomData,
+    ) -> Sdram<'d, T, C>
+    where
+        C: SdramChip<AddressWidth = Address12, DataWidth = Data16, BankCount = Banks4>,
+    {
+        Self::new_cs0(
+            _peri,
+            SdramPins {
+                address: (a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11),
+                banks: (ba0, ba1),
+                data: (
+                    dq0, dq1, dq2, dq3, dq4, dq5, dq6, dq7, dq8, dq9, dq10, dq11, dq12, dq13, dq14, dq15,
+                ),
+                masks: (dm0, dm1),
+                control: ControlPins {
+                    dqs,
+                    clk,
+                    cke,
+                    ras,
+                    cas,
+                    we,
+                    cs,
+                },
+            },
             chip,
-            base_address,
-            cs: 0,
-        }
+        )
     }
 }
 
@@ -1005,17 +1244,13 @@ pub enum Error {
 // Instance trait
 // ============================================================================
 
-trait SealedInstance: crate::sysctl::ClockPeripheral {
-    const REGS: crate::pac::femc::Femc;
-}
-
 /// FEMC instance trait.
 #[allow(private_bounds)]
-pub trait Instance: SealedInstance + 'static {}
+pub trait Instance: sealed::Instance + 'static {}
 
 foreach_peripheral!(
     (femc, $inst:ident) => {
-        impl crate::femc::SealedInstance for crate::peripherals::$inst {
+        impl crate::femc::sealed::Instance for crate::peripherals::$inst {
             const REGS: crate::pac::femc::Femc = crate::pac::$inst;
         }
         impl crate::femc::Instance for crate::peripherals::$inst {}
@@ -1052,6 +1287,8 @@ pin_trait!(CS1Pin, Instance); // NCE for SRAM
 
 pin_trait!(DM0Pin, Instance);
 pin_trait!(DM1Pin, Instance);
+pin_trait!(DM2Pin, Instance);
+pin_trait!(DM3Pin, Instance);
 
 pin_trait!(DQSPin, Instance);
 

@@ -10,7 +10,10 @@
 //! | [`W9812g6jh6`] | 16MB | 16-bit | HPM6750EVKMINI |
 //! | [`W9825g6kh6`] | 32MB | 16-bit | HPM6E00EVK |
 
-use super::{Bank2Sel, BurstLen, CasLatency, ColAddrBits, MemorySize, SdramPortSize};
+use super::geometry::{
+    Address12, Address13, Banks4, Data16, SdramAddressWidth, SdramBankCount, SdramDataWidth,
+};
+use super::{BurstLen, CasLatency, ColAddrBits, MemorySize};
 
 /// Trait for SDRAM chip timing and configuration.
 ///
@@ -21,7 +24,11 @@ use super::{Bank2Sel, BurstLen, CasLatency, ColAddrBits, MemorySize, SdramPortSi
 /// # Example
 ///
 /// ```ignore
-/// use hpm_hal::femc::{SdramChip, chips::W9812g6jh6};
+/// use hpm_hal::femc::{
+///     SdramChip,
+///     chips::W9812g6jh6,
+///     geometry::{Address12, Banks4, Data16},
+/// };
 ///
 /// // Use pre-defined chip
 /// let chip = W9812g6jh6;
@@ -29,24 +36,31 @@ use super::{Bank2Sel, BurstLen, CasLatency, ColAddrBits, MemorySize, SdramPortSi
 /// // Or implement custom chip
 /// struct MyCustomSdram;
 /// impl SdramChip for MyCustomSdram {
+///     type AddressWidth = Address12;
+///     type DataWidth = Data16;
+///     type BankCount = Banks4;
+///
 ///     // ... implement all required methods
 /// }
 /// ```
 pub trait SdramChip {
+    /// Number of physical address pins required by this chip.
+    type AddressWidth: SdramAddressWidth;
+
+    /// Width of the external SDRAM data port.
+    type DataWidth: SdramDataWidth;
+
+    /// Number of banks in the SDRAM.
+    type BankCount: SdramBankCount;
+
     /// Column address bits (8, 9, 10, 11, or 12 bits)
     fn col_addr_bits(&self) -> ColAddrBits;
 
     /// CAS latency (1, 2, or 3 cycles)
     fn cas_latency(&self) -> CasLatency;
 
-    /// Number of banks (2 or 4)
-    fn bank_num(&self) -> Bank2Sel;
-
     /// Memory size
     fn size(&self) -> MemorySize;
-
-    /// Data port size (8, 16, or 32 bits)
-    fn port_size(&self) -> SdramPortSize;
 
     /// Number of rows to refresh (typically 4096 or 8192)
     fn refresh_count(&self) -> u32;
@@ -136,6 +150,10 @@ pub trait SdramChip {
 pub struct W9812g6jh6;
 
 impl SdramChip for W9812g6jh6 {
+    type AddressWidth = Address12;
+    type DataWidth = Data16;
+    type BankCount = Banks4;
+
     fn col_addr_bits(&self) -> ColAddrBits {
         ColAddrBits::_9BIT
     }
@@ -144,16 +162,8 @@ impl SdramChip for W9812g6jh6 {
         CasLatency::_3
     }
 
-    fn bank_num(&self) -> Bank2Sel {
-        Bank2Sel::BANK_NUM_4
-    }
-
     fn size(&self) -> MemorySize {
         MemorySize::_16MB
-    }
-
-    fn port_size(&self) -> SdramPortSize {
-        SdramPortSize::_16BIT
     }
 
     fn refresh_count(&self) -> u32 {
@@ -216,6 +226,10 @@ impl SdramChip for W9812g6jh6 {
 pub struct W9825g6kh6;
 
 impl SdramChip for W9825g6kh6 {
+    type AddressWidth = Address13;
+    type DataWidth = Data16;
+    type BankCount = Banks4;
+
     fn col_addr_bits(&self) -> ColAddrBits {
         ColAddrBits::_9BIT
     }
@@ -224,16 +238,8 @@ impl SdramChip for W9825g6kh6 {
         CasLatency::_3
     }
 
-    fn bank_num(&self) -> Bank2Sel {
-        Bank2Sel::BANK_NUM_4
-    }
-
     fn size(&self) -> MemorySize {
         MemorySize::_32MB
-    }
-
-    fn port_size(&self) -> SdramPortSize {
-        SdramPortSize::_16BIT
     }
 
     fn refresh_count(&self) -> u32 {
