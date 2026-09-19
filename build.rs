@@ -354,6 +354,8 @@ fn main() {
         (("femc", "CS1"), quote!(crate::femc::CS1Pin)),
         (("femc", "DM0"), quote!(crate::femc::DM0Pin)),
         (("femc", "DM1"), quote!(crate::femc::DM1Pin)),
+        (("femc", "DM2"), quote!(crate::femc::DM2Pin)),
+        (("femc", "DM3"), quote!(crate::femc::DM3Pin)),
         (("femc", "DQS"), quote!(crate::femc::DQSPin)),
         (("femc", "DQ00"), quote!(crate::femc::DQ00Pin)),
         (("femc", "DQ01"), quote!(crate::femc::DQ01Pin)),
