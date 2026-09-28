@@ -102,6 +102,10 @@ pub(crate) fn local_to_sys_address(addr: u32) -> u32 {
 
 mod bus;
 mod control_pipe;
+#[cfg(feature = "usb-diagnostics")]
+pub mod diagnostics;
+#[cfg(not(feature = "usb-diagnostics"))]
+mod diagnostics;
 mod endpoint;
 mod state;
 #[cfg(any(hpm53, hpm68, hpm6e, hpm5e))]
@@ -222,6 +226,8 @@ impl Qtd {
     }
 
     pub(crate) fn reinit_with(self, data: &[u8], transfer_bytes: usize, int_on_complete: bool) {
+        diagnostics::record_qtd(self.as_ptr() as u32, data.as_ptr() as u32, transfer_bytes);
+
         // AXI SRAM's non-cacheable PMA is buffered. Build each hardware word
         // with one full volatile write so descriptor initialization never
         // depends on read-after-write visibility through that buffer.
@@ -258,6 +264,8 @@ impl Qtd {
         // Convert buffer address to system address for DMA access
         // Reference: HPMicro C SDK uses core_local_mem_to_sys_address() for buffer
         let sys_addr = local_to_sys_address(data.as_ptr() as u32);
+        diagnostics::record_qtd_system_address(sys_addr);
+
         // Word 2 contains both the first page pointer and current offset. The
         // C SDK assigns the complete pointer in one store; mirror that exactly.
         self.buffer(0).write(|w| w.0 = sys_addr);
@@ -646,6 +654,7 @@ pub unsafe fn on_interrupt<T: Instance>() {
     let r = T::info().regs;
     let status = r.usbsts().read();
     let enabled_interrupts = r.usbintr().read();
+    diagnostics::record_interrupt::<T>(status.0, enabled_interrupts.0);
 
     // USBSTS is W1C. Acknowledge every enabled cause at ISR entry, matching
     // the HPM SDK and CherryUSB controller ports.
@@ -654,10 +663,12 @@ pub unsafe fn on_interrupt<T: Instance>() {
     let _ = r.usbsts().read();
 
     if status.0 == 0 {
+        diagnostics::set_stage(0x701);
         return;
     }
 
     if status.uri() {
+        diagnostics::set_stage(0x710);
         IRQ_RESET.store(true, Ordering::Release);
         EP_IN_COMPLETE.store(0, Ordering::Release);
         EP_OUT_COMPLETE.store(0, Ordering::Release);
@@ -673,11 +684,13 @@ pub unsafe fn on_interrupt<T: Instance>() {
     }
 
     if status.sli() {
+        diagnostics::set_stage(0x720);
         IRQ_SUSPEND.store(true, Ordering::Release);
         BUS_WAKER.wake();
     }
 
     if status.pci() {
+        diagnostics::set_stage(0x730);
         if r.portsc1().read().ccs() {
             r.usbintr().modify(|w| w.set_pce(false));
             BUS_WAKER.wake();
@@ -685,6 +698,8 @@ pub unsafe fn on_interrupt<T: Instance>() {
     }
 
     if status.ui() {
+        diagnostics::set_stage(0x740);
+
         if r.endptsetupstat().read().endptsetupstat() > 0 {
             // Keep UE enabled: a new SETUP can arrive while the control pipe
             // is waiting on either EP0 direction, and unrelated bulk endpoint
