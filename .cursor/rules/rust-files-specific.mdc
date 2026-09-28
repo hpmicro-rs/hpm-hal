@@ -1,0 +1,289 @@
+---
+globs: *.rs
+description: Rust文件专用编码规范
+---
+
+# Rust文件编码规范
+
+## 文件头部结构
+
+### 属性声明
+```rust
+#![no_std]
+#![feature(abi_riscv_interrupt)]
+#![allow(unexpected_cfgs, static_mut_refs)]
+```
+
+### 宏导入
+```rust
+#![macro_use]
+#![allow(unused)]
+```
+
+### 导入顺序
+1. 标准库导入
+2. 外部crate导入 (按字母序)
+3. 当前crate导入 (按模块层级)
+
+示例:
+```rust
+use core::convert::Infallible;
+use core::marker::PhantomData;
+
+use embassy_hal_internal::{impl_peripheral, into_ref, Peripheral};
+use embedded_hal::digital::OutputPin;
+
+use crate::{pac, peripherals};
+use crate::gpio::{AnyPin, SealedPin};
+```
+
+## 错误处理模式
+
+### 错误类型定义
+```rust
+#[non_exhaustive]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum ConfigError {
+    /// 具体错误描述
+    BaudrateTooLow,
+    BaudrateTooHigh,
+}
+```
+
+### Result类型使用
+- 优先使用自定义错误类型
+- 对于简单操作可使用 `Infallible`
+- 配置错误使用 `ConfigError`
+- I/O错误使用 `embedded_io::Error`
+
+## 内存安全模式
+
+### 临界区操作
+```rust
+critical_section::with(|_| {
+    self.pin.set_as_input();
+    self.pin.set_pull(pull);
+});
+```
+
+### 原子操作
+```rust
+use core::sync::atomic::{AtomicU32, AtomicU8, Ordering};
+
+static WAKER: AtomicWaker = AtomicWaker::new();
+```
+
+### 生命周期管理
+```rust
+pub struct Flex<'d> {
+    pub(crate) pin: PeripheralRef<'d, AnyPin>,
+}
+
+impl<'d> Flex<'d> {
+    pub fn new(pin: impl Peripheral<P = impl Pin> + 'd) -> Self {
+        into_ref!(pin);
+        Self { pin: pin.map_into() }
+    }
+}
+```
+
+## HAL驱动模式
+
+### 构造函数模式
+```rust
+impl<'d> UartTx<'d> {
+    pub fn new_blocking(
+        peri: impl Peripheral<P = impl Instance> + 'd,
+        tx: impl Peripheral<P = impl TxPin<T>> + 'd,
+        config: Config,
+    ) -> Result<Self, ConfigError> {
+        into_ref!(peri, tx);
+        // 实现逻辑
+    }
+}
+```
+
+### 配置结构体
+```rust
+#[non_exhaustive]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Config {
+    pub baudrate: u32,
+    pub data_bits: DataBits,
+    pub stop_bits: StopBits,
+    pub parity: Parity,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            baudrate: 115200,
+            data_bits: DataBits::DataBits8,
+            stop_bits: StopBits::STOP1,
+            parity: Parity::ParityNone,
+        }
+    }
+}
+```
+
+## 异步编程模式
+
+### Future实现
+```rust
+use core::future::poll_fn;
+use core::task::Poll;
+
+pub async fn wait_for_high(&mut self) {
+    poll_fn(move |cx| {
+        if self.is_high() {
+            Poll::Ready(())
+        } else {
+            // 注册唤醒器
+            WAKER.register(cx.waker());
+            Poll::Pending
+        }
+    }).await
+}
+```
+
+### 异步/阻塞切换
+```rust
+use crate::mode::{Async, Blocking, Mode};
+
+pub struct Uart<'d, M: Mode> {
+    inner: UartInner<'d>,
+    _phantom: PhantomData<M>,
+}
+
+impl<'d> Uart<'d, Blocking> {
+    pub fn blocking_read(&mut self, buf: &mut [u8]) -> Result<(), Error> {
+        // 阻塞实现
+    }
+}
+
+impl<'d> Uart<'d, Async> {
+    pub async fn read(&mut self, buf: &mut [u8]) -> Result<(), Error> {
+        // 异步实现
+    }
+}
+```
+
+## 中断处理模式
+
+### 中断绑定
+```rust
+use crate::bind_interrupts;
+
+bind_interrupts!(struct Irqs {
+    UART0 => uart::InterruptHandler<peripherals::UART0>;
+    GPIO => gpio::InterruptHandler;
+});
+```
+
+### 中断处理器实现
+```rust
+pub struct InterruptHandler<T: Instance> {
+    _phantom: PhantomData<T>,
+}
+
+impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandler<T> {
+    unsafe fn on_interrupt() {
+        // 中断处理逻辑
+        T::Interrupt::steal().complete();
+    }
+}
+```
+
+## 条件编译规范
+
+### 特性检查
+```rust
+#[cfg(feature = "embassy")]
+pub mod embassy;
+
+#[cfg(mcan)]
+pub mod mcan;
+
+#[cfg(all(feature = "time", feature = "embassy"))]
+use embassy_time::Instant;
+```
+
+### 芯片差异处理
+```rust
+#[cfg(hpm67)]
+self.pin.ioc_pad().pad_ctl().modify(|w| w.set_smt(enable));
+
+#[cfg(not(hpm67))]
+self.pin.ioc_pad().pad_ctl().modify(|w| w.set_hys(enable));
+```
+
+### IP特性处理
+```rust
+#[cfg(soc_ip_feature = "UART_RX_IDLE_DETECT")]
+fn enable_idle_detection(&self) {
+    // 实现逻辑
+}
+```
+
+## 文档注释规范
+
+### 模块文档
+```rust
+//! Universal Asynchronous Receiver/Transmitter
+//!
+//! HPM_IP_FEATURE:
+//! - UART_RX_IDLE_DETECT: v53, v68, v62
+//! - UART_FCRR: v53, v68
+```
+
+### 函数文档
+```rust
+/// Put the pin into input mode.
+///
+/// # Arguments
+/// * `pull` - Pull resistor configuration
+///
+/// # Example
+/// ```ignore
+/// pin.set_as_input(Pull::Up);
+/// ```
+pub fn set_as_input(&mut self, pull: Pull) {
+```
+
+### 类型文档
+```rust
+/// GPIO flexible pin.
+///
+/// This type allows runtime configuration of pin mode and parameters.
+pub struct Flex<'d> {
+    pub(crate) pin: PeripheralRef<'d, AnyPin>,
+}
+```
+
+## 测试相关
+
+### 示例代码
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_config_default() {
+        let config = Config::default();
+        assert_eq!(config.baudrate, 115200);
+    }
+}
+```
+
+### 内联函数
+对于简单的getter/setter使用 `#[inline]`:
+```rust
+#[inline]
+pub fn is_high(&self) -> bool {
+    !self.is_low()
+}
+```
+
+这些规范确保Rust代码的一致性、安全性和可维护性。

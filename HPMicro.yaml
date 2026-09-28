@@ -5,7 +5,7 @@ variants:
       - name: core0
         type: riscv
         core_access_options: !Riscv {}
-    stack_size: 1024
+    # stack_size: 1024
     memory_map:
       - !Ram
         name: ILM0
@@ -42,7 +42,7 @@ variants:
       - name: core0
         type: riscv
         core_access_options: !Riscv {}
-    stack_size: 1024
+    # stack_size: 1024
     memory_map:
       - !Ram
         name: ILM0
@@ -81,7 +81,7 @@ variants:
       - name: core0
         type: riscv
         core_access_options: !Riscv {}
-    stack_size: 1024
+    # stack_size: 1024
     memory_map:
       - !Ram
         name: ILM0
@@ -121,7 +121,7 @@ variants:
       - name: core0
         type: riscv
         core_access_options: !Riscv {}
-    stack_size: 1024
+    # stack_size: 1024
     memory_map:
       - !Ram
         name: ILM0
@@ -162,7 +162,7 @@ variants:
       - name: core0
         type: riscv
         core_access_options: !Riscv {}
-    stack_size: 1024
+    # stack_size: 1024
     memory_map:
       - !Ram
         name: ILM0
@@ -206,7 +206,7 @@ variants:
       - name: core0
         type: riscv
         core_access_options: !Riscv {}
-    stack_size: 1024
+    # stack_size: 1024
     memory_map:
       - !Ram
         name: ILM0

@@ -1,0 +1,7 @@
+runner = [
+    "probe-rs", "run",
+    "--chip", "HPM5361",
+    "--chip-description-path", "../../HPMicro.yaml",
+    "--protocol","jtag",
+    "--log-format", "{t} {L} {fff}:{l} {s}",
+]

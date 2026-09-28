@@ -1,0 +1,418 @@
+---
+alwaysApply: true
+description: 文档和注释编写规范
+---
+
+# 文档和注释编写规范
+
+## 模块级文档
+
+### 模块头部文档
+每个模块都应包含清晰的功能说明和特性列表：
+
+```rust
+//! Universal Asynchronous Receiver/Transmitter
+//!
+//! HPM_IP_FEATURE:
+//! - UART_RX_IDLE_DETECT:  v53, v68, v62
+//! - UART_FCRR:            v53, v68
+//!   - use FCRR to instead of FCR (FIFO and DMA control)
+//! - UART_RX_EN:           v53, v68
+//! - UART_E00018_FIX:      v53
+//!   - the IIR2 register exists, should use IIR2 to get/clear rx idle status
+//!
+//! ## Features
+//! - Blocking and async operation modes
+//! - DMA support for high-throughput data transfer
+//! - Hardware flow control
+//! - Multiple data formats (5-8 bits, parity, stop bits)
+//!
+//! ## Usage
+//! ```ignore
+//! let mut uart = Uart::new_blocking(p.UART0, p.PA01, p.PA00, config)?;
+//! uart.blocking_write(b"Hello, World!")?;
+//! ```
+```
+
+### IP特性说明格式
+```rust
+//! HPM_IP_FEATURE:
+//! - FEATURE_NAME: 支持的芯片版本
+//!   - 详细说明
+//! - ANOTHER_FEATURE: v53, v62, v67
+//!   - 功能描述
+//!   - 使用注意事项
+```
+
+## 结构体和枚举文档
+
+### 结构体文档
+```rust
+/// UART外设驱动
+///
+/// 支持阻塞和异步操作模式，提供完整的串口通信功能。
+/// 通过泛型参数 `M` 区分操作模式。
+///
+/// # 类型参数
+/// - `M`: 操作模式，可以是 [`Blocking`] 或 [`Async`]
+///
+/// # 示例
+/// ```ignore
+/// // 阻塞模式
+/// let uart = Uart::<Blocking>::new_blocking(p.UART0, tx_pin, rx_pin, config)?;
+/// 
+/// // 异步模式
+/// let uart = Uart::<Async>::new(p.UART0, tx_pin, rx_pin, irqs, dma, config)?;
+/// ```
+pub struct Uart<'d, M: Mode> {
+    inner: UartInner<'d>,
+    _phantom: PhantomData<M>,
+}
+```
+
+### 枚举文档
+```rust
+/// 数据位配置
+///
+/// 定义UART传输中每个字符包含的数据位数量。
+/// 大多数应用使用8位数据传输。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum DataBits {
+    /// 5位数据传输
+    DataBits5,
+    /// 6位数据传输  
+    DataBits6,
+    /// 7位数据传输
+    DataBits7,
+    /// 8位数据传输 (最常用)
+    DataBits8,
+}
+```
+
+### 错误类型文档
+```rust
+/// UART配置错误
+///
+/// 在UART初始化或配置过程中可能出现的错误类型。
+#[non_exhaustive]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum ConfigError {
+    /// 波特率设置过低
+    /// 
+    /// 波特率必须在硬件支持的范围内
+    BaudrateTooLow,
+    
+    /// 波特率设置过高
+    /// 
+    /// 超出了硬件或系统时钟的限制
+    BaudrateTooHigh,
+    
+    /// 接收或发送功能未启用
+    /// 
+    /// 至少需要启用RX或TX功能之一
+    RxOrTxNotEnabled,
+}
+```
+
+## 函数文档
+
+### 构造函数文档
+```rust
+/// 创建阻塞模式的UART实例
+///
+/// 初始化指定的UART外设，配置TX和RX引脚，并设置通信参数。
+/// 此函数会立即配置硬件并返回可用的UART实例。
+///
+/// # 参数
+/// - `peri`: UART外设实例
+/// - `tx`: 发送数据引脚
+/// - `rx`: 接收数据引脚  
+/// - `config`: UART配置参数
+///
+/// # 返回值
+/// 成功时返回配置好的UART实例，失败时返回配置错误。
+///
+/// # 错误
+/// - [`ConfigError::BaudrateTooLow`]: 波特率过低
+/// - [`ConfigError::BaudrateTooHigh`]: 波特率过高
+/// - [`ConfigError::RxOrTxNotEnabled`]: 未启用收发功能
+///
+/// # 示例
+/// ```ignore
+/// let config = Config {
+///     baudrate: 115200,
+///     data_bits: DataBits::DataBits8,
+///     stop_bits: StopBits::STOP1,
+///     parity: Parity::ParityNone,
+/// };
+/// 
+/// let uart = Uart::new_blocking(p.UART0, p.PA01, p.PA00, config)?;
+/// ```
+pub fn new_blocking(
+    peri: impl Peripheral<P = impl Instance> + 'd,
+    tx: impl Peripheral<P = impl TxPin<T>> + 'd,
+    rx: impl Peripheral<P = impl RxPin<T>> + 'd,
+    config: Config,
+) -> Result<Self, ConfigError> {
+    // 实现
+}
+```
+
+### 异步函数文档
+```rust
+/// 异步读取数据到缓冲区
+///
+/// 从UART异步读取数据，直到缓冲区填满或遇到错误。
+/// 此函数使用DMA进行高效的数据传输。
+///
+/// # 参数
+/// - `buf`: 用于存储接收数据的缓冲区
+///
+/// # 返回值
+/// 成功时返回 `Ok(())`，失败时返回I/O错误。
+///
+/// # 取消安全性
+/// 此函数是取消安全的。如果Future被取消，DMA传输会被正确停止，
+/// 硬件状态会被清理。
+///
+/// # 示例
+/// ```ignore
+/// let mut buffer = [0u8; 1024];
+/// uart.read(&mut buffer).await?;
+/// defmt::info!("Received {} bytes", buffer.len());
+/// ```
+pub async fn read(&mut self, buf: &mut [u8]) -> Result<(), Error> {
+    // 实现
+}
+```
+
+### 内联函数文档
+```rust
+/// 检查引脚输入电平是否为高
+///
+/// # 返回值
+/// 如果引脚电平为高返回 `true`，否则返回 `false`
+#[inline]
+pub fn is_high(&self) -> bool {
+    !self.is_low()
+}
+```
+
+## 宏文档
+
+### 宏使用说明
+```rust
+/// 绑定中断处理器到中断向量
+///
+/// 此宏生成必要的中断处理函数并实现类型级别的中断绑定，
+/// 确保在编译时验证中断处理器的正确性。
+///
+/// 生成的结构体可以传递给驱动程序构造函数，以证明
+/// 相应的中断已经被正确绑定。
+///
+/// # 语法
+/// ```ignore
+/// bind_interrupts!(struct StructName {
+///     INTERRUPT_NAME => HandlerType<PeripheralType>;
+///     ANOTHER_INTERRUPT => AnotherHandler<AnotherPeripheral>, ThirdHandler<AnotherPeripheral>;
+/// });
+/// ```
+///
+/// # 参数
+/// - `StructName`: 生成的中断绑定结构体名称
+/// - `INTERRUPT_NAME`: 中断向量名称（如 `UART0`, `GPIO`）
+/// - `HandlerType`: 中断处理器类型
+/// - `PeripheralType`: 外设类型
+///
+/// # 示例
+/// 
+/// 绑定单个中断：
+/// ```ignore
+/// bind_interrupts!(struct Irqs {
+///     UART0 => uart::InterruptHandler<peripherals::UART0>;
+/// });
+/// ```
+///
+/// 绑定多个中断和处理器：
+/// ```ignore  
+/// bind_interrupts!(struct Irqs {
+///     I2C1 => i2c::EventInterruptHandler<peripherals::I2C1>, 
+///             i2c::ErrorInterruptHandler<peripherals::I2C1>;
+///     UART0 => uart::InterruptHandler<peripherals::UART0>;
+/// });
+/// ```
+///
+/// # 生成的代码
+/// 此宏会生成：
+/// - 中断处理函数
+/// - 类型级别的绑定实现
+/// - 中断完成通知（PLIC）
+///
+/// # 注意事项
+/// - 中断名称必须与芯片的中断向量表匹配
+/// - 每个中断只能绑定一次
+/// - 处理器类型必须实现相应的Handler trait
+#[macro_export]
+macro_rules! bind_interrupts {
+    // 宏实现
+}
+```
+
+## 代码注释规范
+
+### 实现注释
+```rust
+impl<'d> Flex<'d> {
+    pub fn new(pin: impl Peripheral<P = impl Pin> + 'd) -> Self {
+        into_ref!(pin);
+        
+        // 配置引脚为GPIO功能
+        pin.set_as_ioc_gpio();
+        
+        // 注意：引脚初始状态为断开连接
+        Self { pin: pin.map_into() }
+    }
+
+    pub fn set_as_output(&mut self, speed: Speed) {
+        critical_section::with(|_| {
+            // 首先设置为输出模式
+            self.pin.set_as_output();
+
+            // HPM67系列不支持速度配置
+            #[cfg(not(hpm67))]
+            self.pin.ioc_pad().pad_ctl().modify(|w| {
+                w.set_spd(speed as u8);
+            });
+        });
+    }
+}
+```
+
+### 芯片差异注释
+```rust
+// HPM67系列使用SMT位控制施密特触发器
+#[cfg(hpm67)]
+self.pin.ioc_pad().pad_ctl().modify(|w| w.set_smt(enable));
+
+// 其他系列使用HYS位
+#[cfg(not(hpm67))]
+self.pin.ioc_pad().pad_ctl().modify(|w| w.set_hys(enable));
+```
+
+### TODO注释规范
+```rust
+// TODO: 实现9位数据模式支持
+// - 需要修改数据类型以支持9位
+// - 更新校验位计算逻辑
+// - 添加相应的测试用例
+
+// FIXME: HPM6750的DMA存在已知问题
+// 参考: https://github.com/hpmicro/hpm-hal/issues/123
+// 临时使用轮询模式，等待芯片修订版本
+
+// NOTE: 此处使用unsafe是安全的
+// 因为我们确保了以下条件：
+// 1. 寄存器访问在临界区内
+// 2. 硬件状态已经验证
+// 3. 中断已正确配置
+```
+
+## 示例代码文档
+
+### 示例头部说明
+```rust
+//! GPIO LED闪烁示例
+//!
+//! 演示如何使用GPIO驱动控制LED，实现基本的开关和闪烁功能。
+//!
+//! ## 硬件要求
+//! - HPM5300EVK开发板
+//! - 板载LED连接到PA23引脚
+//! - （可选）按钮连接到PB02引脚用于交互
+//!
+//! ## 接线说明
+//! ```text
+//! PA23 ——— LED正极 (通过限流电阻)
+//! GND  ——— LED负极
+//! ```
+//!
+//! ## 运行方法
+//! ```bash
+//! cd examples/hpm5300evk  
+//! cargo run --release --bin blinky
+//! ```
+//!
+//! ## 预期行为
+//! - LED每秒闪烁一次
+//! - 串口输出闪烁状态信息
+//! - 按下按钮改变闪烁频率
+```
+
+### 内联示例说明
+```rust
+fn main() -> ! {
+    // 初始化HAL，设置系统时钟和基本外设
+    let p = hal::init(Default::default());
+
+    // 配置PA23为推挽输出，初始电平为低（LED关闭）
+    // 使用默认速度设置（通常为中速）
+    let mut led = Output::new(p.PA23, Level::Low, Speed::default());
+
+    defmt::info!("LED控制示例启动");
+
+    loop {
+        // 点亮LED（设置为高电平）
+        led.set_high();
+        defmt::info!("LED开启");
+        
+        // 延时1秒（使用忙等待）
+        delay.delay_ms(1000);
+        
+        // 熄灭LED（设置为低电平）
+        led.set_low();
+        defmt::info!("LED关闭");
+        
+        // 再次延时1秒
+        delay.delay_ms(1000);
+    }
+}
+```
+
+## 文档测试和验证
+
+### 文档测试标记
+```rust
+/// 配置UART波特率
+///
+/// # 示例
+/// ```ignore  // 标记为ignore因为需要硬件支持
+/// let mut config = Config::default();
+/// config.set_baudrate(9600)?;
+/// ```
+///
+/// 对于仅编译测试：
+/// ```rust,no_run
+/// # use hpm_hal::uart::Config;
+/// let config = Config::default();
+/// assert_eq!(config.baudrate, 115200);
+/// ```
+pub fn set_baudrate(&mut self, baudrate: u32) -> Result<(), ConfigError> {
+    // 实现
+}
+```
+
+### 链接和引用
+```rust
+/// 配置GPIO引脚
+///
+/// 相关函数请参见：
+/// - [`set_as_input`](Self::set_as_input) - 设置为输入模式
+/// - [`set_as_output`](Self::set_as_output) - 设置为输出模式
+/// - [`crate::gpio::Pull`] - 上拉下拉配置
+/// 
+/// 更多信息请查看[GPIO模块文档](crate::gpio)。
+```
+
+这些规范确保文档的完整性、准确性和用户友好性。

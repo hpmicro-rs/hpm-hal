@@ -14,7 +14,7 @@
 //!
 //! ```rust,ignore
 //! use hpm_hal::ewdg::{Watchdog, Config};
-//! use embassy_time::Duration;
+//! use core::time::Duration;
 //!
 //! // HPM5300/HPM6800 series: EWDG0, EWDG1
 //! let mut wdg = Watchdog::new(p.EWDG0, Config::default());
@@ -26,8 +26,9 @@
 //! }
 //! ```
 
+use core::time::Duration;
+
 use embassy_hal_internal::Peri;
-use embassy_time::Duration;
 
 use crate::pac;
 
@@ -177,12 +178,12 @@ impl<'d, T: Instance> Watchdog<'d, T> {
     /// Start the watchdog with specified timeout
     ///
     /// Max timeout with 32K clock: ~2000 seconds (16-bit counter, max divider)
-    pub fn start(&mut self, timeout: Duration) {
+    pub fn start(&mut self, timeout: impl Into<Duration>) {
         let r = T::regs();
 
         // Calculate timeout ticks
-        let timeout_us = timeout.as_micros();
-        let mut ticks = timeout_us * self.clock_freq as u64 / 1_000_000;
+        let timeout = timeout.into();
+        let mut ticks = timeout.as_micros() * self.clock_freq as u128 / 1_000_000;
 
         // Find appropriate divider (2^div_value)
         let mut div_value = 0u8;

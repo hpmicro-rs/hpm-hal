@@ -1,0 +1,173 @@
+---
+alwaysApply: true
+description: HPM-HAL Rust 项目编码规范
+---
+
+# HPM-HAL Rust 编码规范
+
+## 项目结构和组织
+
+### 模块组织
+- 每个外设驱动使用独立的模块目录 (如 `gpio/`, `uart/`, `spi/`)
+- 主模块文件命名为 `mod.rs`
+- 相关功能的子模块放在同一目录下
+- 使用 `#![macro_use]` 标记包含宏定义的模块
+
+### 代码分组
+- 必需外设模块 (required peripherals): dma, flash, sysctl
+- 通用外设模块 (other peripherals): gpio, i2c, uart, usb 等
+- 模拟外设模块 (analog peripherals): adc, dac
+- 电机控制外设 (motor control peripherals): qei, rng, trgm
+
+## 代码风格
+
+### 格式化配置
+遵循 `rustfmt.toml` 配置:
+```toml
+group_imports = "StdExternalCrate"
+imports_granularity = "Module"
+max_width = 120
+```
+
+### 导入规范
+- 使用 `StdExternalCrate` 分组: 标准库、外部crate、当前crate
+- 按模块级别粒度组织导入
+- 行宽限制为 120 字符
+
+### 命名约定
+- 结构体使用 `PascalCase`: `Flex`, `UartTx`, `DataBits`
+- 枚举变体使用 `PascalCase`: `DataBits5`, `ParityNone`, `STOP1`
+- 函数和变量使用 `snake_case`: `set_as_input`, `blocking_read`
+- 常量使用 `SCREAMING_SNAKE_CASE`: `HPM_UART_DRV_RETRY_COUNT`
+- 宏使用 `snake_case`: `peri_trait`, `pin_trait_impl`
+
+## 嵌入式Rust规范
+
+### no_std 环境
+- 使用 `#![no_std]` 属性
+- 使用 `#![no_main]` 对于可执行文件
+- 入口点使用 `#[hal::entry]` 宏
+
+### 特性标记
+- 使用条件编译: `#[cfg(feature = "embassy")]`, `#[cfg(mcan)]`
+- 芯片特性: `#[cfg(hpm67)]`, `#[cfg(not(hpm67))]`
+- IP特性: `#[cfg(adc16)]`, `#[cfg(rtc)]`
+
+### 错误处理
+- 定义专用错误类型: `ConfigError`, `Error`
+- 使用 `#[non_exhaustive]` 标记错误枚举
+- 实现 `#[cfg_attr(feature = "defmt", derive(defmt::Format))]` 用于调试
+
+## 外设驱动模式
+
+### 生命周期管理
+- 使用 `embassy_hal_internal` 的 `PeripheralRef<'d, T>`
+- 通过 `into_ref!` 宏获取外设引用
+- 使用 `Peripheral` trait 约束
+
+### 操作模式
+- 定义 `Blocking` 和 `Async` 模式
+- 使用 sealed trait 模式限制实现
+- 通过 `Mode` trait 提供类型安全
+
+### 中断处理
+- 使用 `bind_interrupts!` 宏绑定中断处理器
+- 实现 `typelevel::Handler` trait
+- 调用 `interrupt.complete()` 通知PLIC中断完成
+
+## 宏定义规范
+
+### 外设trait宏
+- `peri_trait!`: 定义外设实例trait
+- `peri_trait_impl!`: 实现外设实例
+- 包含中断类型定义: `type $irq: Interrupt`
+
+### 引脚trait宏
+- `pin_trait!`: 定义引脚功能trait
+- `pin_trait_impl!`: 实现具体引脚映射
+- 包含ALT号获取: `fn alt_num(&self) -> u8`
+
+### 文档要求
+- 宏生成的trait需要适当的文档注释
+- 使用 `concat!` 和 `stringify!` 生成动态文档
+- 示例代码使用 `ignore` 标记避免测试
+
+## 异步编程
+
+### Embassy集成
+- 使用 `embassy_hal_internal` 工具
+- 实现 `embassy_time_driver` 基于MCHTMR
+- 支持 `embassy_sync` 和 `embassy_futures`
+
+### Future实现
+- 在独立文件中实现Future: `input_future.rs`
+- 使用 `AtomicWaker` 进行异步唤醒
+- 通过 `poll_fn` 实现轮询逻辑
+
+### DMA支持
+- 异步操作优先使用DMA
+- 实现 `ChannelAndRequest` 抽象
+- 支持HDMA和XDMA两种DMA类型
+
+## 示例代码规范
+
+### 基本结构
+```rust
+#![no_main]
+#![no_std]
+
+use hpm_hal as hal;
+use {defmt_rtt as _, hpm_hal as hal};
+
+#[hal::entry]
+fn main() -> ! {
+    let p = hal::init(Default::default());
+    // 应用逻辑
+    loop {
+        // 主循环
+    }
+}
+
+#[panic_handler]
+unsafe fn panic(_info: &core::panic::PanicInfo) -> ! {
+    defmt::info!("panic!");
+    loop {}
+}
+```
+
+### 外设初始化
+- 使用 `Default::default()` 作为默认配置
+- 明确指定引脚映射: `p.PA01`, `p.PA00`
+- 配置结构体使用builder模式或直接字段访问
+
+## 测试和验证
+
+### 功能验证
+- 每个外设提供阻塞和异步示例
+- 示例代码位于 `examples/` 目录
+- 按开发板组织: `hpm5300evk/`, `hpm6750evkmini/`等
+
+### CI/CD
+- 使用 `ci.sh` 脚本编译所有示例
+- 支持多芯片目标编译
+- 集成probe-rs和OpenOCD调试工具
+
+## 文档规范
+
+### 模块文档
+- 每个模块提供功能概述
+- 列出相关的IP特性: `HPM_IP_FEATURE`
+- 包含TODO列表标记未完成功能
+
+### API文档
+- 公共API提供详细文档注释
+- 包含使用示例 (使用 `ignore` 标记)
+- 参数和返回值说明
+- 错误情况说明
+
+### 特性说明
+- 芯片差异通过条件编译处理
+- 在注释中说明不同版本的区别
+- 提供功能支持表格
+
+这些规范确保代码质量、可维护性和团队协作效率。

@@ -374,6 +374,41 @@ pub struct Transfer<'a> {
 }
 
 impl<'a> Transfer<'a> {
+    /// Create a memory-to-memory DMA transfer.
+    ///
+    /// Source and destination must reside in memory visible to the selected
+    /// DMA controller. Applications with a data cache must also maintain cache
+    /// coherency or place both buffers in non-cacheable memory.
+    pub fn new_memcpy<W: Word>(
+        channel: Peri<'a, impl Channel>,
+        src: &'a [W],
+        dst: &'a mut [W],
+        options: TransferOptions,
+    ) -> Self {
+        assert!(!src.is_empty());
+        assert_eq!(src.len(), dst.len());
+
+        let channel = channel.into();
+        unsafe {
+            channel.configure(
+                0,
+                Dir::MemoryToPeripheralType,
+                src.as_ptr() as *const u32,
+                W::size(),
+                AddrCtrl::INCREMENT,
+                dst.as_mut_ptr() as *mut u32,
+                W::size(),
+                AddrCtrl::INCREMENT,
+                src.len(),
+                HandshakeMode::Normal,
+                options,
+            );
+            channel.start();
+        }
+
+        Self { channel }
+    }
+
     /// Create a new read DMA transfer (peripheral to memory).
     pub unsafe fn new_read<W: Word>(
         channel: Peri<'a, impl Channel>,

@@ -31,6 +31,7 @@
           <span>传输方式</span>
           <select id="transport" data-testid="transport">
             <option value="bulk" selected>USB Bulk</option>
+            <option value="webusb">WebUSB 直连</option>
             <option value="serial">CDC Serial</option>
           </select>
         </label>
@@ -98,9 +99,13 @@
           <div class="chart-wrap dual">
             <canvas id="chart-climate" aria-label="温湿度趋势图"></canvas>
           </div>
+          <div class="chart-legend" aria-label="温湿度曲线图例">
+            <span><i style="--legend-color: #fb7185"></i>温度 <strong id="legend-temperature">—</strong></span>
+            <span><i style="--legend-color: #4fd1c5"></i>湿度 <strong id="legend-humidity">—</strong></span>
+          </div>
         </article>
 
-        <article class="sensor-card particle-card" data-testid="pms7003-card">
+        <article class="sensor-card particle-card" data-air-level="idle" data-testid="pms7003-card">
           <div class="card-heading">
             <div>
               <p class="sensor-name">PMS7003</p>
@@ -114,8 +119,27 @@
             <div><span>PM2.5</span><div class="bar"><i id="pm25-bar"></i></div><strong id="pm25-small">—</strong></div>
             <div><span>PM10</span><div class="bar"><i id="pm10-bar"></i></div><strong id="pm10">—</strong></div>
           </div>
+          <div class="pm-advisory" id="pm-advisory" data-level="idle">
+            <div class="pm-advisory-heading">
+              <span>瞬时工程预警</span>
+              <strong id="pm-advisory-label">等待数据</strong>
+            </div>
+            <p id="pm-advisory-detail">24 小时达标以长期平均值判定</p>
+            <div class="pm-thresholds" aria-label="PM2.5 工程预警分级">
+              <span data-level="good">≤15</span>
+              <span data-level="elevated">15–35</span>
+              <span data-level="attention">35–50</span>
+              <span data-level="high">50–100</span>
+              <span data-level="severe">&gt;100</span>
+            </div>
+          </div>
           <div class="chart-wrap">
             <canvas id="chart-pm" aria-label="颗粒物趋势图"></canvas>
+          </div>
+          <div class="chart-legend" aria-label="颗粒物曲线图例">
+            <span><i style="--legend-color: #60a5fa"></i>PM1.0 <strong id="legend-pm1">—</strong></span>
+            <span><i style="--legend-color: #a78bfa"></i>PM2.5 <strong id="legend-pm25">—</strong></span>
+            <span><i style="--legend-color: #f472b6"></i>PM10 <strong id="legend-pm10">—</strong></span>
           </div>
           <div class="card-footer">
             <span>有效帧 <strong id="pms-frames">—</strong></span>
@@ -179,15 +203,15 @@
       </details>
 
       <details class="diagnostics webusb-panel">
-        <summary>WebUSB 直连诊断</summary>
-        <p>选择 HPM5E31 vendor bulk 接口，检查浏览器对 WebUSB 的可用性。</p>
-        <button class="button secondary" id="webusb">选择 WebUSB 设备</button>
-        <pre id="webusb-log">尚未探测</pre>
+        <summary>WebUSB 直连</summary>
+        <p>浏览器直接 claim HPM5E31 vendor bulk 接口；连接期间 backend USB 自动暂停。</p>
+        <button class="button secondary" id="webusb">连接 WebUSB</button>
+        <pre id="webusb-log">尚未连接</pre>
       </details>
     </main>
 
     <footer>
-      <span>HPM Monitor V2 · 本地 USB bridge</span>
+      <span>HPM Monitor V2 · Backend USB / WebUSB direct</span>
       <span id="packet">—</span>
     </footer>
 

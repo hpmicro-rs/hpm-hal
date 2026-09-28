@@ -1,0 +1,321 @@
+---
+globs: examples/**/*.rs
+description: 示例代码编写规范
+---
+
+# 示例代码编写规范
+
+## 基本结构模板
+
+### 标准示例框架
+```rust
+#![no_main]
+#![no_std]
+
+// 导入必要的trait
+use embedded_io::Write as _;
+use hpm_hal::gpio::{Level, Output, Speed};
+use hpm_hal::uart::Uart;
+use {defmt_rtt as _, hpm_hal as hal};
+
+#[hal::entry]
+fn main() -> ! {
+    // 1. 初始化HAL
+    let p = hal::init(Default::default());
+    
+    // 2. 配置外设
+    let config = hal::uart::Config::default();
+    let mut uart = Uart::new_blocking(p.UART0, p.PA01, p.PA00, config).unwrap();
+    
+    // 3. 主循环
+    loop {
+        // 应用逻辑
+    }
+}
+
+#[panic_handler]
+unsafe fn panic(_info: &core::panic::PanicInfo) -> ! {
+    defmt::info!("panic!");
+    loop {}
+}
+```
+
+## 外设使用模式
+
+### GPIO示例
+```rust
+// LED控制
+let mut led = Output::new(p.PA10, Level::Low, Speed::default());
+
+// 基本操作
+led.set_high();
+led.set_low();
+led.toggle();
+
+// 按钮输入
+let button = Input::new(p.PB02, Pull::Up);
+if button.is_low() {
+    // 按钮按下
+}
+```
+
+### UART示例
+```rust
+// 阻塞模式
+let mut uart = hal::uart::Uart::new_blocking(
+    p.UART0, 
+    p.PA01,  // TX pin
+    p.PA00,  // RX pin
+    config
+).unwrap();
+
+// 写入数据
+writeln!(uart, "Hello, World!").unwrap();
+
+// 读取数据
+let mut buf = [0u8; 4];
+uart.blocking_read(&mut buf).unwrap();
+```
+
+### I2C示例
+```rust
+// I2C配置
+let mut i2c_config = hal::i2c::Config::default();
+i2c_config.frequency = 400_000; // 400kHz
+
+let mut i2c = hal::i2c::I2c::new_blocking(
+    p.I2C0,
+    p.PB02, // SCL
+    p.PB03, // SDA
+    i2c_config
+).unwrap();
+
+// 读写操作
+let mut data = [0u8; 1];
+i2c.blocking_write_read(0x50, &[0x00], &mut data).unwrap();
+```
+
+### SPI示例
+```rust
+// SPI配置
+let mut spi_config = hal::spi::Config::default();
+spi_config.frequency = 1_000_000; // 1MHz
+
+let mut spi = hal::spi::Spi::new_blocking(
+    p.SPI1,
+    p.PA27, // SCK
+    p.PA28, // MOSI
+    p.PA29, // MISO
+    spi_config
+).unwrap();
+
+// 数据传输
+let mut read_buf = [0u8; 4];
+spi.blocking_transfer(&mut read_buf, &[0x01, 0x02, 0x03, 0x04]).unwrap();
+```
+
+## 异步示例模式
+
+### Embassy集成
+```rust
+use embassy_executor::Spawner;
+use embassy_time::{Duration, Timer};
+use hpm_hal::bind_interrupts;
+
+bind_interrupts!(struct Irqs {
+    UART0 => hpm_hal::uart::InterruptHandler<hal::peripherals::UART0>;
+});
+
+#[embassy_executor::main]
+async fn main(_spawner: Spawner) {
+    let p = hal::init(Default::default());
+    
+    // 异步外设初始化
+    let mut uart = hal::uart::Uart::new(
+        p.UART0,
+        p.PA01,
+        p.PA00,
+        Irqs,
+        p.DMA,
+        config
+    ).unwrap();
+    
+    loop {
+        uart.write_all(b"Hello async world!\r\n").await.unwrap();
+        Timer::after(Duration::from_secs(1)).await;
+    }
+}
+```
+
+### 异步GPIO
+```rust
+let mut button = Input::new(p.PB02, Pull::Up);
+let mut led = Output::new(p.PA10, Level::Low, Speed::default());
+
+loop {
+    button.wait_for_falling_edge().await;
+    led.toggle();
+    Timer::after(Duration::from_millis(50)).await; // 防抖
+}
+```
+
+## 调试和日志
+
+### defmt日志使用
+```rust
+use {defmt_rtt as _, hpm_hal as hal};
+
+// 日志级别
+defmt::trace!("详细调试信息");
+defmt::debug!("调试信息");
+defmt::info!("一般信息: {}", value);
+defmt::warn!("警告信息");
+defmt::error!("错误信息");
+
+// 格式化输出
+defmt::info!("Received data: {:?}", &buf[..len]);
+defmt::info!("Counter: {=u32}", counter);
+```
+
+### 时间戳
+```rust
+#[cfg(feature = "defmt")]
+defmt::timestamp!("{=u64:us}", embassy_time::Instant::now().as_micros());
+```
+
+## 错误处理
+
+### Result处理
+```rust
+// 推荐：使用unwrap()仅在示例代码中
+uart.blocking_write(b"test").unwrap();
+
+// 生产代码应该proper处理错误
+match uart.blocking_write(b"test") {
+    Ok(_) => defmt::info!("Write successful"),
+    Err(e) => defmt::error!("Write failed: {:?}", e),
+}
+```
+
+### Panic处理
+```rust
+#[panic_handler]
+unsafe fn panic(info: &core::panic::PanicInfo) -> ! {
+    // 输出panic信息
+    defmt::error!("Panic: {}", defmt::Debug2Format(info));
+    
+    // 可选：复位系统
+    // hpm_hal::sysctl::reset_system();
+    
+    loop {}
+}
+```
+
+## 性能优化示例
+
+### DMA使用
+```rust
+// 大量数据传输优先使用DMA
+let dma_ch = p.DMA.ch0;
+let mut spi = hal::spi::Spi::new(
+    p.SPI1,
+    p.PA27, p.PA28, p.PA29,
+    dma_ch,
+    config
+).unwrap();
+
+// 异步DMA传输
+let large_buffer = [0u8; 1024];
+spi.transfer(&mut read_buf, &large_buffer).await.unwrap();
+```
+
+### 中断优化
+```rust
+// 高频中断使用合适的优先级
+bind_interrupts!(struct Irqs {
+    UART0 => hal::uart::InterruptHandler<hal::peripherals::UART0>;
+});
+```
+
+## 多芯片兼容性
+
+### 条件编译示例
+```rust
+// 根据芯片选择引脚
+#[cfg(any(hpm5300, hpm5301))]
+let mut led = Output::new(p.PA23, Level::Low, Speed::default());
+
+#[cfg(any(hpm6750, hpm6754))]
+let mut led = Output::new(p.PA10, Level::Low, Speed::default());
+
+// UART引脚配置
+#[cfg(feature = "hpm5300evk")]
+let uart_pins = (p.PA01, p.PA00); // TX, RX
+
+#[cfg(feature = "hpm6750evkmini")]
+let uart_pins = (p.PB09, p.PB08); // TX, RX
+```
+
+## 示例文档要求
+
+### 文件头注释
+```rust
+//! UART 阻塞模式示例
+//!
+//! 演示如何使用UART进行基本的串口通信
+//! 
+//! ## 硬件要求
+//! - HPM5300EVK开发板
+//! - USB转串口线连接到UART0 (PA00/PA01)
+//! 
+//! ## 运行方法
+//! ```bash
+//! cd examples/hpm5300evk
+//! cargo run --release --bin blocking_uart
+//! ```
+```
+
+### 内联注释
+```rust
+// 初始化系统时钟和外设
+let p = hal::init(Default::default());
+
+// 配置UART参数：115200-8-N-1
+let uart_config = hal::uart::Config::default();
+
+// 创建UART实例，指定TX/RX引脚
+let mut uart = hal::uart::Uart::new_blocking(
+    p.UART0,    // UART外设
+    p.PA01,     // TX引脚
+    p.PA00,     // RX引脚
+    uart_config
+).unwrap();
+```
+
+## 测试和验证
+
+### 基本功能测试
+```rust
+// 简单的回环测试
+let test_data = b"Hello, HPM!";
+uart.blocking_write(test_data).unwrap();
+
+let mut rx_buf = [0u8; test_data.len()];
+uart.blocking_read(&mut rx_buf).unwrap();
+
+// 验证数据
+assert_eq!(test_data, &rx_buf);
+defmt::info!("Loopback test passed!");
+```
+
+### 性能测试
+```rust
+use embassy_time::Instant;
+
+let start = Instant::now();
+// 执行操作
+let duration = start.elapsed();
+defmt::info!("Operation took: {}us", duration.as_micros());
+```
+
+这些规范确保示例代码的质量、可读性和教育价值。

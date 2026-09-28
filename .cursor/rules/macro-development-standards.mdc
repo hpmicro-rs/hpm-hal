@@ -1,0 +1,347 @@
+---
+description: 宏定义和代码生成规范
+globs: src/macros.rs,build.rs
+---
+
+# 宏定义和代码生成规范
+
+## 宏设计原则
+
+### 命名规范
+- 宏名使用 `snake_case`: `peri_trait`, `pin_trait_impl`
+- 生成的类型使用 `PascalCase`: `Instance`, `SealedInstance`
+- 参数使用描述性名称: `$instance`, `$signal`, `$trait`
+
+### 文档生成
+- 使用 `concat!` 和 `stringify!` 动态生成文档
+- 为生成的trait提供描述性文档
+- 示例代码使用 `ignore` 标记
+
+```rust
+macro_rules! pin_trait {
+    ($signal:ident, $instance:path $(, $mode:path)?) => {
+        #[doc = concat!(stringify!($signal), " pin trait")]
+        pub trait $signal<T: $instance $(, M: $mode)?>: crate::gpio::Pin {
+            #[doc = concat!("Get the ALT number needed to use this pin as ", stringify!($signal))]
+            fn alt_num(&self) -> u8;
+        }
+    };
+}
+```
+
+## 外设Trait宏模式
+
+### 基本外设Trait
+```rust
+macro_rules! peri_trait {
+    (
+        $(irqs: [$($irq:ident),*],)?
+    ) => {
+        #[allow(private_interfaces)]
+        pub(crate) trait SealedInstance {
+            fn info() -> &'static Info;
+            fn state() -> &'static State;
+        }
+
+        /// Peripheral instance trait.
+        #[allow(private_bounds)]
+        pub trait Instance: crate::Peripheral<P = Self> + SealedInstance + crate::sysctl::ClockPeripheral {
+            $($(
+                /// Interrupt for this peripheral.
+                type $irq: crate::interrupt::typelevel::Interrupt;
+            )*)?
+        }
+    };
+}
+```
+
+### 无系统时钟的外设Trait
+```rust
+macro_rules! peri_trait_without_sysclk {
+    (
+        $(irqs: [$($irq:ident),*],)?
+    ) => {
+        // 类似peri_trait但不包含ClockPeripheral约束
+        pub trait Instance: crate::Peripheral<P = Self> + SealedInstance {
+            // 中断类型定义
+        }
+    };
+}
+```
+
+### 外设实现宏
+```rust
+macro_rules! peri_trait_impl {
+    ($instance:ident, $info:expr) => {
+        impl SealedInstance for crate::peripherals::$instance {
+            fn info() -> &'static Info {
+                static INFO: Info = $info;
+                &INFO
+            }
+            fn state() -> &'static State {
+                static STATE: State = State::new();
+                &STATE
+            }
+        }
+        impl Instance for crate::peripherals::$instance {}
+    };
+}
+```
+
+## 引脚映射宏模式
+
+### 引脚Trait定义
+```rust
+macro_rules! pin_trait {
+    ($signal:ident, $instance:path $(, $mode:path)?) => {
+        pub trait $signal<T: $instance $(, M: $mode)?>: crate::gpio::Pin {
+            fn alt_num(&self) -> u8;
+        }
+    };
+}
+```
+
+### 引脚实现宏
+```rust
+macro_rules! pin_trait_impl {
+    (crate::$mod:ident::$trait:ident$(<$mode:ident>)?, $instance:ident, $pin:ident, $alt:expr) => {
+        impl crate::$mod::$trait<crate::peripherals::$instance $(, crate::$mod::$mode)?> 
+            for crate::peripherals::$pin 
+        {
+            fn alt_num(&self) -> u8 {
+                $alt
+            }
+        }
+    };
+}
+```
+
+## 中断绑定宏
+
+### bind_interrupts宏
+```rust
+#[macro_export]
+macro_rules! bind_interrupts {
+    ($vis:vis struct $name:ident { $($irq:ident => $($handler:ty),*;)* }) => {
+        #[derive(Copy, Clone)]
+        $vis struct $name;
+
+        $(
+            #[$crate::interrupt]
+            fn $irq() {
+                use $crate::interrupt::InterruptExt;
+                
+                $(
+                    <$handler as $crate::interrupt::typelevel::Handler<$crate::interrupt::typelevel::$irq>>::on_interrupt();
+                )*
+                
+                // 通知PLIC中断已处理
+                $crate::interrupt::$irq.complete();
+            }
+
+            $(
+                unsafe impl $crate::interrupt::typelevel::Binding<$crate::interrupt::typelevel::$irq, $handler> for $name {}
+            )*
+        )*
+    };
+}
+```
+
+## 代码生成脚本规范 (build.rs)
+
+### 基本结构
+```rust
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fmt::Write as _;
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
+
+use hpm_metapac::metadata::METADATA;
+use proc_macro2::TokenStream;
+use quote::{format_ident, quote};
+```
+
+### 芯片特性处理
+```rust
+fn get_ip_features(chip_family: &str) -> &[&str] {
+    match chip_family {
+        "hpm67" => &[
+            "ADC16_HAS_TEMPSNS",
+            "DUAL_CORE",
+        ],
+        "hpm53" => &[
+            "GPTMR_MONITOR",
+            "UART_RX_IDLE_DETECT",
+            "SPI_NEW_TRANS_COUNT",
+        ],
+        _ => &[],
+    }
+}
+```
+
+### 代码生成模式
+```rust
+fn generate_peripheral_code() -> TokenStream {
+    let mut tokens = TokenStream::new();
+    
+    for peripheral in &METADATA.peripherals {
+        let name = format_ident!("{}", peripheral.name);
+        let instance_type = format_ident!("{}Instance", peripheral.typ);
+        
+        tokens.extend(quote! {
+            impl #instance_type for peripherals::#name {
+                // 生成实现
+            }
+        });
+    }
+    
+    tokens
+}
+```
+
+### 文件写入
+```rust
+fn main() {
+    let out_dir = env::var_os("OUT_DIR").unwrap();
+    let out_dir = Path::new(&out_dir);
+    
+    // 生成代码
+    let generated_code = generate_peripheral_code();
+    
+    // 写入文件
+    let mut file = std::fs::File::create(out_dir.join("_generated.rs")).unwrap();
+    write!(file, "{}", generated_code).unwrap();
+    
+    // 通知cargo重新构建条件
+    println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=Cargo.toml");
+}
+```
+
+## 条件编译宏
+
+### 特性检查宏
+```rust
+macro_rules! cfg_if_feature {
+    ($feature:literal, $($item:item)*) => {
+        $(
+            #[cfg(feature = $feature)]
+            $item
+        )*
+    };
+}
+```
+
+### 芯片特性宏
+```rust
+macro_rules! chip_specific {
+    (
+        $(
+            $chip:ident => {
+                $($item:item)*
+            }
+        )*
+    ) => {
+        $(
+            $(
+                #[cfg($chip)]
+                $item
+            )*
+        )*
+    };
+}
+```
+
+## 宏调试和测试
+
+### 宏展开调试
+```rust
+// 使用cargo expand查看宏展开结果
+// cargo expand --bin target_binary
+
+// 或使用println!调试
+macro_rules! debug_print {
+    ($($tokens:tt)*) => {
+        println!("Generated: {}", stringify!($($tokens)*));
+    };
+}
+```
+
+### 宏测试
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    // 测试宏生成的代码是否符合预期
+    #[test]
+    fn test_peri_trait_expansion() {
+        // 编译时测试
+        peri_trait!();
+        // 确保能够编译通过
+    }
+}
+```
+
+## 错误处理
+
+### 宏错误报告
+```rust
+macro_rules! compile_error_if_invalid {
+    ($condition:expr, $message:literal) => {
+        const _: () = {
+            if !$condition {
+                compile_error!($message);
+            }
+        };
+    };
+}
+```
+
+### 编译时断言
+```rust
+use static_assertions::const_assert;
+
+macro_rules! peripheral_assert {
+    ($peripheral:ty, $constraint:expr) => {
+        const_assert!($constraint);
+    };
+}
+```
+
+## 宏文档规范
+
+### 宏文档注释
+```rust
+/// 绑定中断处理器到中断向量
+///
+/// 此宏生成中断处理函数并实现必要的trait绑定，确保编译时类型安全。
+///
+/// # 参数
+/// - `struct $name:ident`: 中断绑定结构体名称
+/// - `$irq:ident => $handler:ty`: 中断向量到处理器的映射
+///
+/// # 示例
+/// ```ignore
+/// bind_interrupts!(struct Irqs {
+///     UART0 => uart::InterruptHandler<peripherals::UART0>;
+/// });
+/// ```
+#[macro_export]
+macro_rules! bind_interrupts {
+    // 宏实现
+}
+```
+
+### 生成代码文档
+```rust
+// 在生成的代码中包含适当的文档
+quote! {
+    #[doc = concat!("Instance trait for ", stringify!(#peripheral_name))]
+    pub trait Instance: SealedInstance {
+        // trait定义
+    }
+}
+```
+
+这些规范确保宏代码的质量、可维护性和调试友好性。

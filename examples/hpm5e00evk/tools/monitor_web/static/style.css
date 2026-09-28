@@ -369,6 +369,18 @@ select:disabled {
   color: #fda4af;
 }
 
+.sensor-badge.attention {
+  background: rgba(251, 146, 60, 0.1);
+  border-color: rgba(251, 146, 60, 0.24);
+  color: #fdba74;
+}
+
+.sensor-badge.critical {
+  background: rgba(232, 121, 249, 0.11);
+  border-color: rgba(232, 121, 249, 0.26);
+  color: #f0abfc;
+}
+
 .hero-value {
   align-items: baseline;
   display: flex;
@@ -410,6 +422,39 @@ select:disabled {
   display: block;
   height: 100%;
   width: 100%;
+}
+
+.chart-legend {
+  align-items: center;
+  color: #80958d;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 8px;
+  gap: 7px 13px;
+  justify-content: flex-end;
+  margin-top: 7px;
+}
+
+.chart-legend span {
+  align-items: center;
+  display: inline-flex;
+  gap: 4px;
+}
+
+.chart-legend i {
+  background: var(--legend-color);
+  border-radius: 999px;
+  box-shadow: 0 0 6px var(--legend-color);
+  display: inline-block;
+  height: 3px;
+  width: 10px;
+}
+
+.chart-legend strong {
+  color: #b8c9c2;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 8px;
+  font-weight: 600;
 }
 
 .card-footer {
@@ -486,6 +531,113 @@ select:disabled {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
   text-align: right;
+}
+
+.particle-card {
+  transition: border-color 240ms ease, box-shadow 240ms ease;
+}
+
+.particle-card #pm25 {
+  transition: color 240ms ease, text-shadow 240ms ease;
+}
+
+.particle-card[data-air-level="good"] #pm25 { color: #7ce1b2; }
+.particle-card[data-air-level="elevated"] #pm25 { color: #f5cf78; }
+.particle-card[data-air-level="attention"] #pm25 { color: #fdba74; }
+.particle-card[data-air-level="high"] #pm25 { color: #fda4af; }
+.particle-card[data-air-level="severe"] #pm25 {
+  color: #f0abfc;
+  text-shadow: 0 0 24px rgba(232, 121, 249, 0.22);
+}
+
+.particle-card[data-air-level="high"] {
+  border-color: rgba(251, 113, 133, 0.25);
+}
+
+.particle-card[data-air-level="severe"] {
+  border-color: rgba(232, 121, 249, 0.3);
+  box-shadow: 0 16px 45px rgba(0, 0, 0, 0.12), inset 0 0 45px rgba(232, 121, 249, 0.025);
+}
+
+.pm-advisory {
+  background: rgba(148, 163, 184, 0.035);
+  border: 1px solid rgba(148, 163, 184, 0.09);
+  border-radius: 10px;
+  margin-top: 15px;
+  padding: 9px 10px 8px;
+}
+
+.pm-advisory-heading {
+  align-items: baseline;
+  display: flex;
+  justify-content: space-between;
+}
+
+.pm-advisory-heading span,
+.pm-advisory p {
+  color: #758b82;
+  font-size: 8px;
+}
+
+.pm-advisory-heading strong {
+  color: #a7bbb3;
+  font-size: 10px;
+}
+
+.pm-advisory[data-level="good"] .pm-advisory-heading strong { color: #7ce1b2; }
+.pm-advisory[data-level="elevated"] .pm-advisory-heading strong { color: #f5cf78; }
+.pm-advisory[data-level="attention"] .pm-advisory-heading strong { color: #fdba74; }
+.pm-advisory[data-level="high"] .pm-advisory-heading strong { color: #fda4af; }
+.pm-advisory[data-level="severe"] .pm-advisory-heading strong { color: #f0abfc; }
+
+.pm-advisory p {
+  line-height: 1.35;
+  margin: 4px 0 7px;
+}
+
+.pm-thresholds {
+  display: grid;
+  gap: 3px;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.pm-thresholds span {
+  background: rgba(148, 163, 184, 0.05);
+  border-radius: 4px;
+  color: #60756c;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 7px;
+  padding: 4px 2px 3px;
+  position: relative;
+  text-align: center;
+}
+
+.pm-thresholds span::before {
+  background: #60756c;
+  border-radius: 999px;
+  content: "";
+  display: block;
+  height: 2px;
+  margin: 0 auto 3px;
+  opacity: 0.35;
+  width: 70%;
+}
+
+.pm-thresholds span[data-level="good"]::before { background: #58d49a; }
+.pm-thresholds span[data-level="elevated"]::before { background: #f5c451; }
+.pm-thresholds span[data-level="attention"]::before { background: #fb923c; }
+.pm-thresholds span[data-level="high"]::before { background: #fb7185; }
+.pm-thresholds span[data-level="severe"]::before { background: #e879f9; }
+
+.pm-thresholds span.active {
+  background: rgba(255, 255, 255, 0.065);
+  color: #d6e3de;
+  font-weight: 700;
+}
+
+.pm-thresholds span.active::before {
+  box-shadow: 0 0 8px currentColor;
+  opacity: 1;
 }
 
 .bar {
