@@ -162,7 +162,7 @@ variants:
       - name: core0
         type: riscv
         core_access_options: !Riscv {}
-    stack_size: 1024
+    # stack_size: 1024 (unsupported by probe-rs, commented out)
     memory_map:
       - !Ram
         name: ILM0
