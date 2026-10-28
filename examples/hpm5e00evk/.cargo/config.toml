@@ -2,6 +2,24 @@
 target = "riscv32imafc-unknown-none-elf"
 
 [target.riscv32imafc-unknown-none-elf]
+runner = [
+    "/Users/mono/Elec/probe-rs/target/debug/probe-rs",
+    "run",
+    "--chip",
+    "HPM5E31",
+    "--chip-description-path",
+    "/Users/mono/Elec/HPM/hpm-hal-v3/HPMicro.yaml",
+    "--protocol",
+    "jtag",
+    "--probe",
+    "0d28:0204:214F44B4FEDADD10BB0B8044E000E80A",
+    "--speed",
+    "10",
+    "--disable-progressbars",
+    "--disable-double-buffering",
+    "--no-location",
+]
+
 rustflags = [
     "-Z",
     "tune-cpu=andes-45-series",
@@ -9,6 +27,34 @@ rustflags = [
     "target-feature=+zba,+zbb,+zbc,+zbs",
     "-C",
     "llvm-args=-align-all-functions=2",
+    "-C",
+    "llvm-args=-enable-machine-outliner=never",
+    "-C",
+    "link-arg=-Tmemory.x",
+    "-C",
+    "link-arg=-Tdevice.x",
+    "-C",
+    "link-arg=-Tboot-header.x",
+    "-C",
+    "link-arg=-Thpm-link.x",
+    "-C",
+    "link-arg=-Tdefmt.x",
+    "-C",
+    "link-arg=-nmagic",
+]
+
+# USB protocol firmware follows the HPM SDK USB examples and uses the integer
+# ABI. This keeps the interrupt entry independent of FPU context state.
+[target.riscv32imac-unknown-none-elf]
+rustflags = [
+    "-Z",
+    "tune-cpu=andes-45-series",
+    "-C",
+    "target-feature=+zba,+zbb,+zbc,+zbs",
+    "-C",
+    "llvm-args=-align-all-functions=2",
+    "-C",
+    "llvm-args=-enable-machine-outliner=never",
     "-C",
     "link-arg=-Tmemory.x",
     "-C",

@@ -122,7 +122,9 @@ impl ChannelState {
 pub(crate) unsafe fn init(cs: critical_section::CriticalSection) {
     use crate::interrupt;
 
-    // Note: HDMA clock resource is already added to group 0 in sysctl::init_clock()
+    crate::sysctl::clock_add_to_group(pac::resources::HDMA, 0);
+    #[cfg(any(hpm68, hpm6e, hpm5e))]
+    crate::sysctl::clock_add_to_group(pac::resources::XDMA, 0);
 
     pac::HDMA.dmactrl().modify(|w| w.set_reset(true));
 
